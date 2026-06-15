@@ -77,11 +77,15 @@ object ScreenParser {
         val typeLine = lines.firstOrNull { it.text.contains("单选题") || it.text.contains("多选题") }
         val isMulti = typeLine?.text?.contains("多选") == true
 
-        val ansLine = lines.firstOrNull { it.text.contains("正确答案") }
+        // "正确答案"行：容忍 OCR 把"答"认错(苔案等)，用 含"正确"且含"案"。
+        val ansLine = lines.firstOrNull { it.text.contains("正确") && it.text.contains("案") }
         val confirmLine = lines.firstOrNull { strip(it.text).contains("确定") && it.box.cy() < 2000 }
-        // 反馈页的动作按钮：通常是"下一题"，但最后一题是"提交"。两者都认，提交作后备。
-        val nextLine = lines.firstOrNull { strip(it.text).contains("下一题") && it.box.cy() < 2000 }
-            ?: lines.firstOrNull { strip(it.text).contains("提交") && it.box.cy() < 2000 }
+        // 反馈页动作按钮(下一题/提交)：OCR 常把"一"认成"ー"导致"下ー题"匹配失败，
+        // 改用【位置】定位——反馈区右侧(cx>430)、选项下方导航栏上方(cy 1300~2150)、文字含 题/交。
+        val nextLine = lines.firstOrNull {
+            it.box.cx() > 430 && it.box.cy() in 1300..2150 &&
+                run { val t = strip(it.text); t.contains("题") || t.contains("交") }
+        }
 
         // 有"正确答案" => 反馈页；有"确定" => 答题页；都没有 => 未知
         val kind = when {
@@ -152,9 +156,10 @@ object ScreenParser {
         }
     }
 
-    /** 从 "正确答案:C你的答案:A" 提取正确字母的下标（只取"你的答案"之前的部分）。 */
+    /** 从 "正确答案:C你的答案:A" 提取正确字母下标。用"你的"切分(在它之前=正确答案部分)，
+     *  避免把"你的答案"里的字母也算进来；兼容"答"被OCR认错。 */
     private fun lettersFrom(text: String): List<Int> {
-        val seg = text.substringBefore("你的答案").substringAfter("正确答案")
+        val seg = if (text.contains("你的")) text.substringBefore("你的") else text
         return seg.filter { it in 'A'..'E' }.map { it - 'A' }.distinct()
     }
 
