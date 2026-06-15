@@ -41,7 +41,9 @@ object ScreenParser {
     private fun Rect.cy() = (top + bottom) / 2
 
     fun parse(raw: List<OcrLine>): ScreenModel {
-        val lines = raw.filter { it.box.top in 120..2290 && it.text.isNotBlank() }
+        // 上限放到 2395：要保留任务详情页底部的"开始答题/错题集"按钮(top~2298)。
+        // 底部导航栏(下一题等)由各处的 cy 约束(<2000/<2150)单独排除。
+        val lines = raw.filter { it.box.top in 120..2395 && it.text.isNotBlank() }
             .sortedBy { it.box.cy() }
 
         // 1) 提交弹窗
@@ -55,9 +57,21 @@ object ScreenParser {
             return ScreenModel(ScreenKind.SUBMIT_DIALOG, dialogConfirm = confirmBtn?.box?.let { XY(it.cx(), it.cy()) })
         }
 
-        // 2) 任务详情页（有"开始答题"）
-        val startLine = lines.firstOrNull { strip(it.text).contains("开始答题") }
-        if (startLine != null) {
+        // 2) 任务详情页（组完成后回到这，用于开始下一组）。
+        //    用页面特征词判断，不死磕"开始答题"四个字(OCR 偶尔读不到)。
+        val isTaskDetail = lines.any {
+            it.text.contains("任务详情") || it.text.contains("完成条件") ||
+                it.text.contains("出题规则") || it.text.contains("错题集") ||
+                strip(it.text).contains("开始答题")
+        }
+        if (isTaskDetail) {
+            // "开始答题"按钮：优先文字匹配；读不到则按"错题集"(底部左)的右侧推算(底部右那个按钮)。
+            val startText = lines.firstOrNull { strip(it.text).contains("开始答题") }
+                ?: lines.firstOrNull { it.box.cy() > 2150 && it.box.cx() > 360 && strip(it.text).contains("答题") }
+            val startBtn = startText?.let { XY(it.box.cx(), it.box.cy()) }
+                ?: lines.firstOrNull { it.text.contains("错题集") }
+                    ?.let { XY(it.box.right + it.box.width() * 3, it.box.cy()) }
+
             val projLine = lines.firstOrNull { it.text.contains("项目") }
             val project = projLine?.text
                 ?.substringAfter("项目")?.trimStart(':', '：', ' ')?.trim()
@@ -68,7 +82,7 @@ object ScreenParser {
             }.joinToString("") { it.text }.replace("进行中", "").trim()
             return ScreenModel(
                 ScreenKind.TASK_DETAIL,
-                startBtn = XY(startLine.box.cx(), startLine.box.cy()),
+                startBtn = startBtn,
                 title = title, project = project
             )
         }
