@@ -124,10 +124,15 @@ object ScreenParser {
         val regionLines = lines.filter { it.box.cy() in (regionTop + 1) until regionBottom }
 
         val rows = clusterRows(regionLines, 50)
-        // 题干内部换行间距(~63) < 题干到选项/选项之间间距(~120)，用 90 作阈值切分
-        var optStart = -1
-        for (i in 1 until rows.size) {
-            if (rows[i].cy - rows[i - 1].cy > 90) { optStart = i; break }
+        // 选项靠"行首是 A-E 字母(后跟空格/标点/结尾)"识别——选项前都有圈字母。
+        // 这样不管题干多长(含大段病史+问句)都不会被误切。字母后紧跟中文的(如"A型血")不算。
+        val optLetter = Regex("^[A-E]([ .、，|]|$)")
+        var optStart = rows.indexOfFirst { optLetter.containsMatchIn(it.text.trim()) }
+        if (optStart < 0) {
+            // 回退：选项字母全被 OCR 认错时，用间距法(题干内换行~60 < 选项间距~120)。
+            for (i in 1 until rows.size) {
+                if (rows[i].cy - rows[i - 1].cy > 90) { optStart = i; break }
+            }
         }
         val qRows = if (optStart < 0) rows else rows.subList(0, optStart)
         val optRows = if (optStart < 0) emptyList() else rows.subList(optStart, rows.size)
