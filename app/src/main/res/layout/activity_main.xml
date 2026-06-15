@@ -41,6 +41,42 @@
             android:paddingTop="28dp"
             android:text="@string/usage_help" />
 
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="24dp"
+            android:layout_marginBottom="16dp"
+            android:background="#33000000" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="题库管理"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:paddingBottom="8dp" />
+
+        <TextView
+            android:id="@+id/storageInfo"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="13sp"
+            android:paddingBottom="8dp"
+            android:text="" />
+
+        <Button
+            android:id="@+id/clearTempButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="清理临时文件" />
+
+        <LinearLayout
+            android:id="@+id/banksContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingTop="8dp" />
+
     </LinearLayout>
 
 </ScrollView>

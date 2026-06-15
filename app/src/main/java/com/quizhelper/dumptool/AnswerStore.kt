@@ -17,8 +17,13 @@ class AnswerStore(private val context: Context) {
     private var currentProject = ""
     private val answers = HashMap<String, String>()
 
-    // 每道题"已盲选几次"（仅本次运行内存，跨题库不清也无妨）。
+    // 每道题"已盲选几次"（仅本次运行内存）。
     private val blindAttempts = HashMap<String, Int>()
+
+    // 已见过的题干规范键，用于模糊归并 OCR 噪声造成的近似变体。
+    private val seenKeys = ArrayList<String>()
+
+    private val simThreshold = 0.82
 
     /** 切换当前题库（标题/项目来自任务详情页 OCR）。换库时先存旧库再载新库。 */
     fun setBank(title: String, project: String) {
@@ -29,6 +34,8 @@ class AnswerStore(private val context: Context) {
         currentTitle = title
         currentProject = project
         answers.clear()
+        seenKeys.clear()
+        blindAttempts.clear()
         load()
         Log.i(TAG, "切换题库: $title / $project (已存${answers.size}题)")
     }
@@ -37,24 +44,74 @@ class AnswerStore(private val context: Context) {
 
     fun bankLabel(): String = "$currentTitle / $currentProject"
 
-    /** 查正确答案（返回如 "C" 或多选 "ABD"，没有则 null）。 */
-    fun get(question: String): String? = answers[normalizeQuestion(question)]
+    /** 查正确答案（返回如 "C" 或多选 "ABD"，没有则 null）。模糊匹配题干。 */
+    fun get(question: String): String? {
+        val k = canonical(question, addIfNew = false) ?: return null
+        return answers[k]
+    }
 
     /** 记入正确答案并立即落盘。 */
     fun put(question: String, letters: String) {
         if (letters.isEmpty()) return
-        answers[normalizeQuestion(question)] = letters
+        val k = canonical(question, addIfNew = true) ?: return
+        answers[k] = letters
         persist()
     }
 
     fun size(): Int = answers.size
 
-    /** 没学到答案时的盲选下标：第1次返回0(A)、第2次1(B)…，递增。调用方对选项数取模即可循环。 */
+    /** 没学到答案时的盲选下标：第1次返回0(A)、第2次1(B)…，递增。调用方对选项数取模即可循环。
+     *  用模糊归并后的稳定 key 计数，OCR 噪声不会让计数每次都从头开始。 */
     fun nextBlindIndex(question: String): Int {
-        val k = normalizeQuestion(question)
+        val k = canonical(question, addIfNew = true) ?: return 0
         val n = blindAttempts.getOrDefault(k, 0)
         blindAttempts[k] = n + 1
         return n
+    }
+
+    /**
+     * 把题干解析成"规范键"：和已见过的键比相似度，>=阈值就复用那个旧键(视为同一题)，
+     * 否则视为新题。这样 OCR 让题干每次略有不同时，仍能归并到同一道题。
+     * addIfNew=true 时把新题记入 seenKeys；get 用 false(只查不登记)。
+     */
+    private fun canonical(question: String, addIfNew: Boolean): String? {
+        val norm = normalizeQuestion(question)
+        if (norm.isEmpty()) return null
+        var best: String? = null
+        var bestSim = 0.0
+        for (k in seenKeys) {
+            val sim = similarity(norm, k)
+            if (sim > bestSim) { bestSim = sim; best = k }
+        }
+        if (best != null && bestSim >= simThreshold) return best
+        if (addIfNew) seenKeys.add(norm)
+        return norm
+    }
+
+    private fun similarity(a: String, b: String): Double {
+        if (a == b) return 1.0
+        val maxLen = maxOf(a.length, b.length)
+        if (maxLen == 0) return 1.0
+        if (kotlin.math.abs(a.length - b.length) > maxLen * 0.35) return 0.0
+        val dist = levenshtein(a, b)
+        return 1.0 - dist.toDouble() / maxLen
+    }
+
+    private fun levenshtein(a: String, b: String): Int {
+        val n = b.length
+        if (a.isEmpty()) return n
+        if (b.isEmpty()) return a.length
+        var prev = IntArray(n + 1) { it }
+        var curr = IntArray(n + 1)
+        for (i in 1..a.length) {
+            curr[0] = i
+            for (j in 1..n) {
+                val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+                curr[j] = minOf(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost)
+            }
+            val t = prev; prev = curr; curr = t
+        }
+        return prev[n]
     }
 
     // ---------------------------------------------------------------
@@ -73,6 +130,7 @@ class AnswerStore(private val context: Context) {
             val obj = JSONObject(f.readText())
             val ans = obj.optJSONObject("answers") ?: return@runCatching
             for (k in ans.keys()) answers[k] = ans.getString(k)
+            seenKeys.addAll(answers.keys)
         }.onFailure { Log.e(TAG, "load failed", it) }
     }
 
@@ -103,5 +161,41 @@ class AnswerStore(private val context: Context) {
 
     companion object {
         private const val TAG = "DumpTool"
+
+        /** 列出所有已存题库(供管理界面用)。 */
+        fun listBanks(context: Context): List<BankInfo> {
+            val dir = File(context.getExternalFilesDir(null), "banks")
+            val files = dir.listFiles { f -> f.name.endsWith(".json") } ?: return emptyList()
+            return files.mapNotNull { f ->
+                runCatching {
+                    val o = JSONObject(f.readText())
+                    BankInfo(
+                        file = f,
+                        title = o.optString("title"),
+                        project = o.optString("project"),
+                        count = o.optJSONObject("answers")?.length() ?: 0,
+                        sizeBytes = f.length()
+                    )
+                }.getOrNull()
+            }.sortedByDescending { it.sizeBytes }
+        }
+
+        /** 临时文件(调试截图/OCR等)占用字节数。 */
+        fun tempBytes(context: Context): Long =
+            File(context.getExternalFilesDir(null), "dumps").listFiles()
+                ?.sumOf { it.length() } ?: 0L
+
+        fun clearTemp(context: Context) {
+            File(context.getExternalFilesDir(null), "dumps").listFiles()?.forEach { it.delete() }
+        }
     }
 }
+
+/** 题库概要信息（管理界面展示用）。 */
+data class BankInfo(
+    val file: java.io.File,
+    val title: String,
+    val project: String,
+    val count: Int,
+    val sizeBytes: Long
+)

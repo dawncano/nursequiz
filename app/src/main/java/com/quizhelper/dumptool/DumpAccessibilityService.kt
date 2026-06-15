@@ -271,6 +271,7 @@ class DumpAccessibilityService : AccessibilityService() {
                 tap(m.dialogConfirm)
                 groupsDone++
                 updateAutoButton()
+                clearDumps()   // 每完成一组清掉临时文件，避免占用空间
                 finishStep()
             }
             ScreenKind.UNKNOWN -> { Log.w(TAG, "ACT UNKNOWN, 等待"); finishStep() }
@@ -348,7 +349,7 @@ class DumpAccessibilityService : AccessibilityService() {
         val out = ArrayList<OcrLine>()
         for (block in text.textBlocks) for (line in block.lines) {
             val b = line.boundingBox ?: continue
-            out.add(OcrLine(line.text, b))
+            out.add(OcrLine(OcrFix.fix(line.text), b))
         }
         return out
     }
@@ -443,6 +444,13 @@ class DumpAccessibilityService : AccessibilityService() {
     // ---------------------------------------------------------------------
     // 工具
     // ---------------------------------------------------------------------
+
+    /** 清空临时文件目录(调试导出的截图/OCR/STEP等)。自动答题不写这些，仅调试广播会写。 */
+    private fun clearDumps() {
+        runCatching {
+            File(getExternalFilesDir(null), "dumps").listFiles()?.forEach { it.delete() }
+        }
+    }
 
     private fun saveToFile(prefix: String, text: String) {
         runCatching {
