@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">护理刷题-抓屏工具</string>
+    <string name="service_label">护理刷题-抓屏工具</string>
+    <string name="open_accessibility_settings">去开启无障碍服务</string>
+    <string name="accessibility_description">读取当前屏幕的控件结构，用于分析答题界面。只读取，不会自动点击任何内容。</string>
+    <string name="usage_help">使用步骤：\n1. 点上面的按钮，在系统设置里开启本服务。\n2. 回到这里确认状态变成已开启。\n3. 打开护理助手，进入答题界面。\n4. 点屏幕上的"抓屏"悬浮按钮。\n5. 内容已复制到剪贴板，直接粘贴发给开发者即可。\n\n需要分别抓这几个界面：\n· 正常答题中（选项都在）\n· 答错后（出现正确答案提示和"下一题"按钮）\n· 一组做完（出现"开始答题"按钮）\n· 带 E 选项的题</string>
+</resources>

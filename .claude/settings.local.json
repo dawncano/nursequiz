@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($tools = 'git','cmake','ninja','python','java','adb','qmake','gcc','g++','clang','cl','flutter','node','pip'; foreach \\($t in $tools\\) { $c = Get-Command $t -ErrorAction SilentlyContinue; if \\($c\\) { Write-Output \"$t => $\\($c.Source\\)\" } else { Write-Output \"$t => 未安装/不在PATH\" } })",
+      "PowerShell($paths = 'C:\\\\Qt','D:\\\\Qt','E:\\\\Qt','C:\\\\Program Files\\\\CMake','C:\\\\Android','C:\\\\Users\\\\huangcan\\\\AppData\\\\Local\\\\Android','C:\\\\Program Files\\\\Android','C:\\\\Program Files\\\\Java','C:\\\\Program Files\\\\Microsoft Visual Studio','C:\\\\Program Files \\(x86\\)\\\\Microsoft Visual Studio'; foreach \\($p in $paths\\) { if \\(Test-Path $p\\) { Write-Output \"存在: $p\"; Get-ChildItem $p -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name | ForEach-Object { \"    $_\" } } })",
+      "PowerShell($v = & python --version 2>$null; Write-Output \"python: $v\"; Get-ChildItem 'D:\\\\software' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)"
+    ]
+  }
+}
