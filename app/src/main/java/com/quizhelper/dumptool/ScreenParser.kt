@@ -15,7 +15,8 @@ data class ScreenModel(
     val isMulti: Boolean = false,
     val options: List<XY> = emptyList(),     // 按 A,B,C,D,E 顺序的可点坐标
     val confirm: XY? = null,                 // "确定"
-    val nextBtn: XY? = null,                 // 反馈区"下一题"
+    val nextBtn: XY? = null,                 // 反馈区"下一题"或"提交"按钮
+    val isSubmit: Boolean = false,           // 反馈区动作按钮是"提交"(本轮最后一题)而非"下一题"——盲选字母推进的边界
     val startBtn: XY? = null,                // "开始答题"
     val dialogConfirm: XY? = null,           // 提交弹窗"确定"
     val correctIdx: List<Int> = emptyList(), // 正确答案的选项下标(0=A)
@@ -28,7 +29,7 @@ data class ScreenModel(
         if (questionText.isNotEmpty()) append("Q=\"$questionText\"\n")
         if (options.isNotEmpty()) append("options(${options.size})=$options\n")
         confirm?.let { append("confirm=$it\n") }
-        nextBtn?.let { append("next=$it\n") }
+        nextBtn?.let { append("next=$it submit=$isSubmit\n") }
         startBtn?.let { append("start=$it\n") }
         dialogConfirm?.let { append("dialogConfirm=$it\n") }
         if (correctIdx.isNotEmpty()) append("correctIdx=$correctIdx\n")
@@ -102,6 +103,9 @@ object ScreenParser {
             it.box.cx() > 430 && it.box.cy() in 1300..2150 &&
                 run { val t = strip(it.text); t.contains("题") || t.contains("交") }
         }
+        // 动作按钮是"提交"(本轮最后一题)还是"下一题"：含"提/交"=提交，含"题"=下一题。
+        // "下一题"不含提/交，"提交"不含题，OCR 噪声下也基本能分。这是盲选字母换轮的边界信号。
+        val isSubmit = nextLine?.let { val t = strip(it.text); t.contains("提") || t.contains("交") } ?: false
 
         // 有"正确答案" => 反馈页；有"确定" => 答题页；都没有 => 未知
         val kind = when {
@@ -154,6 +158,7 @@ object ScreenParser {
             options = options,
             confirm = confirmLine?.box?.let { XY(it.cx(), it.cy()) },
             nextBtn = nextLine?.box?.let { XY(it.cx(), it.cy()) },
+            isSubmit = isSubmit,
             correctIdx = correct,
             yourIdx = yours
         )

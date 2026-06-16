@@ -323,12 +323,20 @@ class DumpAccessibilityService : AccessibilityService() {
                 }
                 lastTapKey = null
                 answered++
+                // 动作按钮是"提交"=本轮最后一题，点它进入下一轮——盲选字母在这里换(A→B→C…)。
+                // 不能等到 SUBMIT_DIALOG 才换：那个弹窗只在整组全对那一轮出现一次，
+                // 组内各轮之间根本不触发，会导致字母不换、未知题一直错卡死。
+                if (m.isSubmit) {
+                    blindRound++
+                    Log.i(TAG, "ACT FEEDBACK 提交按钮 -> 进入下一轮, blindRound=${blindRound - 1}->$blindRound")
+                }
                 tap(m.nextBtn); finishStep()
             }
             ScreenKind.SUBMIT_DIALOG -> {
-                Log.i(TAG, "ACT SUBMIT_DIALOG -> 确定, blindRound=$blindRound->next")
+                // 这个弹窗只在整组全部答对那一轮出现，点确定=整组完成(回任务详情页)。
+                // 盲选字母推进已挪到 FEEDBACK 的"提交"按钮分支，这里不再 blindRound++。
+                Log.i(TAG, "ACT SUBMIT_DIALOG -> 确定, 整组完成")
                 tap(m.dialogConfirm)
-                blindRound++   // 下一轮所有未学题统一换下一个字母(A→B→C…)
                 clearDumps()
                 finishStep()
             }
