@@ -62,6 +62,8 @@ class DumpAccessibilityService : AccessibilityService() {
     private var targetGroups = 14          // 默认14组(=210分)
     private var groupsDone = 0
     private var answered = 0
+    private var blindRound = 0             // 本组当前轮次(0=A,1=B…)，每次"提交"+1
+    private var groupInProgress = false    // 是否正在做某一组(用于判断回到任务页=一组完成)
     private val stepIntervalMs = 1300L
 
     private val colorIdle = 0xFF3F51B5.toInt()
@@ -204,6 +206,8 @@ class DumpAccessibilityService : AccessibilityService() {
         auto = true
         groupsDone = 0
         answered = 0
+        blindRound = 0
+        groupInProgress = false
         updateAutoButton()
         toast("开始自动答题，目标 $targetGroups 组")
         scheduleStep()
@@ -234,9 +238,17 @@ class DumpAccessibilityService : AccessibilityService() {
     private fun act(m: ScreenModel) {
         when (m.kind) {
             ScreenKind.TASK_DETAIL -> {
+                if (groupInProgress) {
+                    groupsDone++
+                    blindRound = 0
+                    groupInProgress = false
+                    updateAutoButton()
+                    Log.i(TAG, "ACT TASK_DETAIL 一组完成 groupsDone=$groupsDone")
+                    if (groupsDone >= targetGroups) { stopAuto("已达目标 $targetGroups 组"); return }
+                }
                 if (m.title.isNotEmpty()) store.setBank(m.title, m.project)
-                Log.i(TAG, "ACT TASK_DETAIL bank='${m.title}'/'${m.project}' groupsDone=$groupsDone")
-                if (groupsDone >= targetGroups) { stopAuto("已达目标 $targetGroups 组"); return }
+                Log.i(TAG, "ACT TASK_DETAIL 开始新组 bank='${m.title}'/'${m.project}'")
+                groupInProgress = true
                 tap(m.startBtn); finishStep()
             }
             ScreenKind.QUESTION -> {
@@ -248,8 +260,8 @@ class DumpAccessibilityService : AccessibilityService() {
                 val idxs = if (known != null) {
                     lettersToIdx(known)
                 } else {
-                    // 没学到：按"已盲选次数"轮换 A→B→C→D→E(对选项数取模)，保证最多 size 次必中。
-                    listOf(store.nextBlindIndex(m.questionText) % m.options.size)
+                    // 没学到：本轮统一用 blindRound 对应的字母(A=0,B=1…)，每次提交后+1。
+                    listOf(blindRound % m.options.size)
                 }
                 Log.i(TAG, "ACT QUESTION q='${m.questionText}' opts=${m.options.size} known=$known tapIdx=$idxs")
                 tapSequence(idxs.filter { it < m.options.size }.map { m.options[it] }) {
@@ -267,11 +279,10 @@ class DumpAccessibilityService : AccessibilityService() {
                 tap(m.nextBtn); finishStep()
             }
             ScreenKind.SUBMIT_DIALOG -> {
-                Log.i(TAG, "ACT SUBMIT_DIALOG -> 确定, group完成")
+                Log.i(TAG, "ACT SUBMIT_DIALOG -> 确定, blindRound=$blindRound->next")
                 tap(m.dialogConfirm)
-                groupsDone++
-                updateAutoButton()
-                clearDumps()   // 每完成一组清掉临时文件，避免占用空间
+                blindRound++   // 下一轮所有未学题统一换下一个字母(A→B→C…)
+                clearDumps()
                 finishStep()
             }
             ScreenKind.UNKNOWN -> { Log.w(TAG, "ACT UNKNOWN, 等待"); finishStep() }
