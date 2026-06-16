@@ -70,6 +70,7 @@ class DumpAccessibilityService : AccessibilityService() {
     // 改走 blindRound 轮流盲选——保证哪怕坐标/识别出了我们没预料到的错，也能跳出死循环。
     private val failCount = HashMap<String, Int>()
     private var lastTapKey: String? = null
+    private var lastTapIntended: List<Int> = emptyList()   // QUESTION页本打算点的下标，FEEDBACK拿来和"你的答案"比对
 
     // 连续识别成 UNKNOWN 的次数。每帧先尝试自救(点掉疑似弹窗)，连续到上限仍没恢复
     // 就判定无法自愈：提示用户 + 停止 + 等人工处理，而不是无限死等。上限从 Prefs 读。
@@ -233,6 +234,7 @@ class DumpAccessibilityService : AccessibilityService() {
         lastQuestionText = ""
         failCount.clear()
         lastTapKey = null
+        lastTapIntended = emptyList()
         unknownStreak = 0
         updateAutoButton()
         val mode = if (Prefs.bruteMode(this)) "暴力" else "智能"
@@ -301,6 +303,7 @@ class DumpAccessibilityService : AccessibilityService() {
                     listOf(blindRound % m.options.size)
                 }
                 lastTapKey = key
+                lastTapIntended = idxs.filter { it < m.options.size }
                 Log.i(TAG, "ACT QUESTION brute=$brute q='${m.questionText}' opts=${m.options.size} known=$known distrusted=$distrusted tapIdx=$idxs")
                 tapSequence(idxs.filter { it < m.options.size }.map { m.options[it] }) {
                     tap(m.confirm)
@@ -313,23 +316,37 @@ class DumpAccessibilityService : AccessibilityService() {
                 // 长度不同导致模糊匹配失败，下次 get() 找不到答案。
                 val storeKey = lastQuestionText.takeIf { it.isNotEmpty() } ?: m.questionText
                 lastQuestionText = ""
-                Log.i(TAG, "ACT FEEDBACK q='${m.questionText}' correct=$letters your=${idxToLetters(m.yourIdx)}")
-                if (m.correctIdx.isNotEmpty() && storeKey.isNotEmpty()) {
-                    store.put(storeKey, letters)
-                }
-                // 用页面上"你的答案"核实点击是否真的命中——而不是看我们打算点哪个下标，
-                // 这样才能查出"答案查对了但点击没点中"这类问题(如选项坐标行被OCR换行残字顶歪)。
                 val key = lastTapKey
-                if (key != null && m.yourIdx.isNotEmpty() && m.correctIdx.isNotEmpty()) {
+                val intended = lastTapIntended
+                lastTapKey = null
+                lastTapIntended = emptyList()
+
+                // "实际选中的(你的答案) == 本来打算点的"？yourIdx 读不到或没记录预设时，无从判断，
+                // 保守当作"点中了"(tapHit=true)，维持原行为。
+                val tapHit = m.yourIdx.isEmpty() || intended.isEmpty() ||
+                    m.yourIdx.toSet() == intended.toSet()
+                Log.i(TAG, "ACT FEEDBACK q='${m.questionText}' correct=$letters your=${idxToLetters(m.yourIdx)} intended=$intended tapHit=$tapHit")
+
+                if (m.correctIdx.isNotEmpty() && storeKey.isNotEmpty()) {
+                    if (tapHit) {
+                        // 确认是"我们点的就是选中的"，这一帧可信 → 学/覆盖正确答案。
+                        store.put(storeKey, letters)
+                    } else {
+                        // 点击没点中(点偏/被遮挡)，这一帧可能整体不可信 → 不写题库，免得把好答案改坏。
+                        Log.w(TAG, "ACT FEEDBACK 点击没命中(your!=intended)，本次不写题库")
+                    }
+                }
+                // failCount 只统计"确实点中了、但答案还是错"——即答案本身的问题；
+                // 点击没点中不算答案错，不计入，免得把一条本来正确的存档误判成不可信。
+                if (key != null && tapHit && m.yourIdx.isNotEmpty() && m.correctIdx.isNotEmpty()) {
                     if (m.yourIdx.toSet() != m.correctIdx.toSet()) {
                         val n = failCount.getOrDefault(key, 0) + 1
                         failCount[key] = n
-                        Log.w(TAG, "ACT FEEDBACK 命中失败 第${n}次 your=${m.yourIdx} correct=${m.correctIdx}")
+                        Log.w(TAG, "ACT FEEDBACK 答案错 第${n}次 your=${m.yourIdx} correct=${m.correctIdx}")
                     } else {
                         failCount.remove(key)
                     }
                 }
-                lastTapKey = null
                 answered++
                 // 动作按钮是"提交"=本轮最后一题，点它进入下一轮——盲选字母在这里换(A→B→C…)。
                 // 不能等到 SUBMIT_DIALOG 才换：那个弹窗只在整组全对那一轮出现一次，
