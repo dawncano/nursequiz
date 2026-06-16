@@ -107,6 +107,10 @@ class AnswerStore(private val context: Context) {
     private fun canonical(question: String, addIfNew: Boolean): String? {
         val norm = normalizeQuestion(question)
         if (norm.isEmpty()) return null
+        // 快路径：归一化后正好命中已存答案的 key（题干稳定时是常态）→ O(1) 直接返回，
+        // 免去对整库逐题算 Levenshtein 的慢扫描。题库越大，这条快路径省得越多。
+        if (answers.containsKey(norm)) return norm
+        // 慢路径：容忍 OCR 噪声，找当前库里最相近的已见 key。
         var best: String? = null
         var bestSim = 0.0
         for (k in seenKeys) {
