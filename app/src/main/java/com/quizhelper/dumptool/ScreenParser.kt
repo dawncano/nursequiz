@@ -19,6 +19,7 @@ data class ScreenModel(
     val isSubmit: Boolean = false,           // 反馈区动作按钮是"提交"(本轮最后一题)而非"下一题"——盲选字母推进的边界
     val startBtn: XY? = null,                // "开始答题"
     val dialogConfirm: XY? = null,           // 提交弹窗"确定"
+    val dismissBtn: XY? = null,              // UNKNOWN 画面里疑似可关闭的按钮(确定/关闭/我知道了)，用于自救
     val correctIdx: List<Int> = emptyList(), // 正确答案的选项下标(0=A)
     val yourIdx: List<Int> = emptyList(),    // FEEDBACK页"你的答案"实际选项下标(0=A)，用于核实点击是否真的命中
     val title: String = "",
@@ -111,7 +112,18 @@ object ScreenParser {
         val kind = when {
             ansLine != null -> ScreenKind.FEEDBACK
             confirmLine != null -> ScreenKind.QUESTION
-            else -> return ScreenModel(ScreenKind.UNKNOWN)
+            else -> {
+                // 未知画面：尽力找一个可关闭的按钮(确定/关闭/我知道了/取消)供自救点掉。
+                val dismiss = lines.firstOrNull {
+                    val t = strip(it.text)
+                    t.contains("我知道") || t.contains("知道了") || t.contains("关闭") ||
+                        t == "确定" || t == "取消" || t == "好的"
+                }
+                return ScreenModel(
+                    ScreenKind.UNKNOWN,
+                    dismissBtn = dismiss?.box?.let { XY(it.cx(), it.cy()) }
+                )
+            }
         }
 
         // 题干起点：顶部区域里"以题号数字开头 或 含题型字样"的行的底边。

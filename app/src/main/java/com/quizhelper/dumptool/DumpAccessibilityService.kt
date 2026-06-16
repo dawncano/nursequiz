@@ -71,6 +71,11 @@ class DumpAccessibilityService : AccessibilityService() {
     // 改走 blindRound 轮流盲选——保证哪怕坐标/识别出了我们没预料到的错，也能跳出死循环。
     private val failCount = HashMap<String, Int>()
     private var lastTapKey: String? = null
+
+    // 连续识别成 UNKNOWN 的次数。每帧先尝试自救(点掉疑似弹窗)，连续到上限仍没恢复
+    // 就判定无法自愈：提示用户 + 停止 + 等人工处理，而不是无限死等。
+    private var unknownStreak = 0
+    private val unknownLimit = 5
     private val failLimit = 2
 
     private val colorIdle = 0xFF3F51B5.toInt()
@@ -229,6 +234,7 @@ class DumpAccessibilityService : AccessibilityService() {
         lastQuestionText = ""
         failCount.clear()
         lastTapKey = null
+        unknownStreak = 0
         updateAutoButton()
         toast("开始自动答题，目标 $targetGroups 组")
         scheduleStep()
@@ -258,6 +264,7 @@ class DumpAccessibilityService : AccessibilityService() {
     }
 
     private fun act(m: ScreenModel) {
+        if (m.kind != ScreenKind.UNKNOWN) unknownStreak = 0
         when (m.kind) {
             ScreenKind.TASK_DETAIL -> {
                 if (groupInProgress) {
@@ -340,7 +347,18 @@ class DumpAccessibilityService : AccessibilityService() {
                 clearDumps()
                 finishStep()
             }
-            ScreenKind.UNKNOWN -> { Log.w(TAG, "ACT UNKNOWN, 等待"); finishStep() }
+            ScreenKind.UNKNOWN -> {
+                unknownStreak++
+                Log.w(TAG, "ACT UNKNOWN 第${unknownStreak}/${unknownLimit}次 dismiss=${m.dismissBtn}")
+                if (unknownStreak >= unknownLimit) {
+                    // 自救也没用，连续多帧识别不出——别再死等，提示用户后停下等人工。
+                    stopAuto("连续${unknownLimit}次画面无法识别，需人工处理后重新开始")
+                    return
+                }
+                // 先试着点掉疑似提示弹窗(确定/关闭/我知道了)，下一帧再看是否恢复。
+                m.dismissBtn?.let { tap(it) }
+                finishStep()
+            }
         }
     }
 
