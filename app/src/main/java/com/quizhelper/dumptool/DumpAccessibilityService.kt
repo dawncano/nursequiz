@@ -59,13 +59,12 @@ class DumpAccessibilityService : AccessibilityService() {
 
     // 自动答题状态
     @Volatile private var auto = false
-    private var targetGroups = 14          // 默认14组(=210分)
+    private var targetGroups = Prefs.DEF_TARGET   // 目标组数，startAuto 时从 Prefs 读
     private var groupsDone = 0
     private var answered = 0
     private var blindRound = 0             // 本组当前轮次(0=A,1=B…)，每次"提交"+1
     private var groupInProgress = false    // 是否正在做某一组(用于判断回到任务页=一组完成)
     private var lastQuestionText = ""      // QUESTION页的题干，用于FEEDBACK存答案(避免FEEDBACK多出解析文字)
-    private val stepIntervalMs = 1300L
 
     // 兜底：已存答案连续"判错"次数(按题干稳定key)。达到上限就不再信任存档答案，
     // 改走 blindRound 轮流盲选——保证哪怕坐标/识别出了我们没预料到的错，也能跳出死循环。
@@ -73,9 +72,8 @@ class DumpAccessibilityService : AccessibilityService() {
     private var lastTapKey: String? = null
 
     // 连续识别成 UNKNOWN 的次数。每帧先尝试自救(点掉疑似弹窗)，连续到上限仍没恢复
-    // 就判定无法自愈：提示用户 + 停止 + 等人工处理，而不是无限死等。
+    // 就判定无法自愈：提示用户 + 停止 + 等人工处理，而不是无限死等。上限从 Prefs 读。
     private var unknownStreak = 0
-    private val unknownLimit = 5
     private val failLimit = 2
 
     private val colorIdle = 0xFF3F51B5.toInt()
@@ -227,6 +225,7 @@ class DumpAccessibilityService : AccessibilityService() {
     private fun startAuto() {
         if (auto) return
         auto = true
+        targetGroups = Prefs.targetGroups(this)   // 本次运行的目标组数，取设置页的值
         groupsDone = 0
         answered = 0
         blindRound = 0
@@ -236,7 +235,8 @@ class DumpAccessibilityService : AccessibilityService() {
         lastTapKey = null
         unknownStreak = 0
         updateAutoButton()
-        toast("开始自动答题，目标 $targetGroups 组")
+        val mode = if (Prefs.bruteMode(this)) "暴力" else "智能"
+        toast("开始自动答题（$mode 模式），目标 $targetGroups 组")
         scheduleStep()
     }
 
@@ -252,7 +252,8 @@ class DumpAccessibilityService : AccessibilityService() {
 
     private fun scheduleStep() {
         if (!auto) return
-        mainHandler.postDelayed({ loopStep() }, stepIntervalMs)
+        // 每次都从 Prefs 读，运行期在设置页改了 step 间隔下一拍就生效。
+        mainHandler.postDelayed({ loopStep() }, Prefs.stepIntervalMs(this))
     }
 
     private fun loopStep() {
@@ -287,20 +288,20 @@ class DumpAccessibilityService : AccessibilityService() {
                     finishStep(); return
                 }
                 lastQuestionText = m.questionText   // 保存题干，供 FEEDBACK 存答案用
+                val brute = Prefs.bruteMode(this)
                 val key = store.keyFor(m.questionText)
-                // 兜底：这题用存档答案已经连续判错够次数，说明存档答案本身没问题(FEEDBACK每次
-                // 都会用当时识别的"正确答案"覆盖存档)，但点击始终没能命中——不再信任存档，
-                // 改走 blindRound 轮流盲选(每次提交换一个字母)，保证最终能跳出死循环。
+                // 暴力模式：完全不查表，每题都走 blindRound 盲选(但 FEEDBACK 仍照常建库)。
+                // 智能模式：先查表；若存档答案连续判错够次数(distrusted)则不信任、退回盲选。
                 val distrusted = key != null && failCount.getOrDefault(key, 0) >= failLimit
-                val known = if (distrusted) null else store.get(m.questionText)
+                val known = if (brute || distrusted) null else store.get(m.questionText)
                 val idxs = if (known != null) {
                     lettersToIdx(known)
                 } else {
-                    // 没学到或已被标记不可信：本轮统一用 blindRound 对应的字母(A=0,B=1…)，每次提交后+1。
+                    // 没学到/暴力模式/已被标记不可信：本轮统一用 blindRound 对应的字母(A=0,B=1…)。
                     listOf(blindRound % m.options.size)
                 }
                 lastTapKey = key
-                Log.i(TAG, "ACT QUESTION q='${m.questionText}' opts=${m.options.size} known=$known distrusted=$distrusted tapIdx=$idxs")
+                Log.i(TAG, "ACT QUESTION brute=$brute q='${m.questionText}' opts=${m.options.size} known=$known distrusted=$distrusted tapIdx=$idxs")
                 tapSequence(idxs.filter { it < m.options.size }.map { m.options[it] }) {
                     tap(m.confirm)
                     finishStep()
@@ -349,10 +350,11 @@ class DumpAccessibilityService : AccessibilityService() {
             }
             ScreenKind.UNKNOWN -> {
                 unknownStreak++
-                Log.w(TAG, "ACT UNKNOWN 第${unknownStreak}/${unknownLimit}次 dismiss=${m.dismissBtn}")
-                if (unknownStreak >= unknownLimit) {
+                val limit = Prefs.unknownLimit(this)
+                Log.w(TAG, "ACT UNKNOWN 第${unknownStreak}/${limit}次 dismiss=${m.dismissBtn}")
+                if (unknownStreak >= limit) {
                     // 自救也没用，连续多帧识别不出——别再死等，提示用户后停下等人工。
-                    stopAuto("连续${unknownLimit}次画面无法识别，需人工处理后重新开始")
+                    stopAuto("连续${limit}次画面无法识别，需人工处理后重新开始")
                     return
                 }
                 // 先试着点掉疑似提示弹窗(确定/关闭/我知道了)，下一帧再看是否恢复。
