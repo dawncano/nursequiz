@@ -155,10 +155,16 @@ object ScreenParser {
                 if (rows[i].cy - rows[i - 1].cy > 90) { optStart = i; break }
             }
         }
-        val qRows = if (optStart < 0) rows else rows.subList(0, optStart)
         val optRows = if (optStart < 0) emptyList() else rows.subList(optStart, rows.size)
 
-        val questionText = qRows.joinToString("") { it.text }.trim()
+        // 题干文字【按阅读顺序(先上下后左右)直接从原始行拼】，绕开 clusterRows——
+        // 它的 65px 合并会把长题干临界行距(~60px)的换行并进同一簇、又只按左右(x)拼接，
+        // 把上下两行横着串起来打乱(同一题每轮文字都不同、污染题库key，真机已复现)。
+        // 选项行仍用 clusterRows 结果(字母识别/坐标不受影响)。top 量化到30px桶降低同行抖动。
+        val qBottom = optRows.firstOrNull()?.box?.top ?: Int.MAX_VALUE
+        val questionText = regionLines.filter { it.box.cy() < qBottom }
+            .sortedWith(compareBy({ it.box.top / 30 }, { it.box.left }))
+            .joinToString("") { it.text }.trim()
         val options = optRows.map { XY(it.box.cx(), it.cy) }
         val correct = ansLine?.let { lettersFrom(it.text) } ?: emptyList()
         val yours = ansLine?.let { yoursFrom(it.text) } ?: emptyList()
