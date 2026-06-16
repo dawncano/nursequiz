@@ -200,6 +200,41 @@ class AnswerStore(private val context: Context) {
         fun clearTemp(context: Context) {
             File(context.getExternalFilesDir(null), "dumps").listFiles()?.forEach { it.delete() }
         }
+
+        // --- 题库条目的查看/修正(供 MainActivity 6.8 用)。直接读写题库 JSON，
+        //     不经过运行期实例。改动在下次 setBank 加载该库时生效。---
+
+        /** 读出某题库文件里的全部"题干 → 答案"条目。 */
+        fun loadEntries(file: File): LinkedHashMap<String, String> {
+            val map = LinkedHashMap<String, String>()
+            runCatching {
+                val ans = JSONObject(file.readText()).optJSONObject("answers") ?: return map
+                for (k in ans.keys()) map[k] = ans.getString(k)
+            }
+            return map
+        }
+
+        /** 改写/新增一条答案，保留标题/项目并刷新 updated。 */
+        fun saveEntry(file: File, question: String, letters: String) {
+            runCatching {
+                val o = JSONObject(file.readText())
+                val ans = o.optJSONObject("answers") ?: JSONObject()
+                ans.put(question, letters)
+                o.put("answers", ans).put("updated", System.currentTimeMillis())
+                file.writeText(o.toString())
+            }.onFailure { Log.e(TAG, "saveEntry failed", it) }
+        }
+
+        /** 删除一条答案。 */
+        fun deleteEntry(file: File, question: String) {
+            runCatching {
+                val o = JSONObject(file.readText())
+                val ans = o.optJSONObject("answers") ?: return
+                ans.remove(question)
+                o.put("answers", ans).put("updated", System.currentTimeMillis())
+                file.writeText(o.toString())
+            }.onFailure { Log.e(TAG, "deleteEntry failed", it) }
+        }
     }
 }
 

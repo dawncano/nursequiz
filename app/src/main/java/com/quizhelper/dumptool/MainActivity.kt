@@ -134,10 +134,13 @@ class MainActivity : Activity() {
     }
 
     private fun buildBankRow(b: BankInfo): View {
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 8, 0, 8)
+        }
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 12, 0, 12)
         }
         val info = TextView(this).apply {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -145,13 +148,76 @@ class MainActivity : Activity() {
             val title = b.title.ifEmpty { "(未命名)" }
             text = "$title\n${b.project}　·　已记 ${b.count} 题　·　${b.sizeBytes / 1024}KB"
         }
+        // 展开/收起：展开后列出该库所有"题干→答案"条目，可改可删。
+        val entries = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding(0, 8, 0, 0)
+        }
+        val expand = Button(this).apply {
+            text = "展开"
+            setOnClickListener {
+                if (entries.visibility == View.GONE) {
+                    fillEntries(entries, b)
+                    entries.visibility = View.VISIBLE
+                    text = "收起"
+                } else {
+                    entries.visibility = View.GONE
+                    text = "展开"
+                }
+            }
+        }
         val del = Button(this).apply {
             text = "删除"
             setOnClickListener { confirmDelete(b) }
         }
         row.addView(info)
+        row.addView(expand)
         row.addView(del)
-        return row
+        wrap.addView(row)
+        wrap.addView(entries)
+        return wrap
+    }
+
+    /** 把题库的每条"题干 → 答案"渲染成可编辑行：答案 EditText 失焦保存，✕ 删除。 */
+    private fun fillEntries(container: LinearLayout, b: BankInfo) {
+        container.removeAllViews()
+        val map = AnswerStore.loadEntries(b.file)
+        if (map.isEmpty()) {
+            container.addView(TextView(this).apply { text = "（这个题库还没有条目）"; textSize = 13f })
+            return
+        }
+        for ((question, letters) in map) {
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 6, 0, 6)
+            }
+            item.addView(TextView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                textSize = 12f
+                text = if (question.length > 40) question.take(40) + "…" else question
+            })
+            item.addView(EditText(this).apply {
+                layoutParams = LinearLayout.LayoutParams(150, ViewGroup.LayoutParams.WRAP_CONTENT)
+                inputType = InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+                setText(letters)
+                setOnFocusChangeListener { _, hasFocus ->
+                    if (!hasFocus) {
+                        val v = text.toString().uppercase().filter { it in 'A'..'E' }
+                        if (v.isNotEmpty()) AnswerStore.saveEntry(b.file, question, v)
+                    }
+                }
+            })
+            item.addView(Button(this).apply {
+                text = "✕"
+                setOnClickListener {
+                    AnswerStore.deleteEntry(b.file, question)
+                    fillEntries(container, b)   // 重新渲染
+                }
+            })
+            container.addView(item)
+        }
     }
 
     private fun confirmDelete(b: BankInfo) {
