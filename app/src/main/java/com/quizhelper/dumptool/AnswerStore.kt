@@ -12,7 +12,7 @@ import java.io.File
  */
 class AnswerStore(private val context: Context) {
 
-    private var currentKey: String? = null
+    private var currentFile: File? = null
     private var currentTitle = ""
     private var currentProject = ""
     private val answers = HashMap<String, String>()
@@ -25,22 +25,49 @@ class AnswerStore(private val context: Context) {
 
     private val simThreshold = 0.82
 
-    /** 切换当前题库（标题/项目来自任务详情页 OCR）。换库时先存旧库再载新库。 */
+    // 题库同一性的模糊阈值：同一题库的 OCR 噪声变体相似度约 0.92，不同题库(靠括号内容+分册号
+    // 区分)约 0.73，0.84 居中能干净分开。偏保守，误并风险用 6.8 题库管理里手动改/删兜底。
+    private val bankSim = 0.84
+
+    /** 切换当前题库（标题/项目来自任务详情页 OCR）。
+     *  不再要求"标题+项目完全相等"——OCR 噪声(漏引号、急诊科↔急诊利、考↔孝)会把同一题库
+     *  拆成多个文件。改为模糊匹配复用已有库；若发现多个重复库，合并答案并删掉多余文件(不丢答案)。 */
     fun setBank(title: String, project: String) {
-        val key = normalizeKey(title) + "||" + normalizeKey(project)
-        if (key == currentKey) return
+        val incoming = bankId(title, project)
+        // 和当前库够像就不切换(避免每帧 TASK_DETAIL 都重载)。
+        if (currentFile != null && similarity(incoming, bankId(currentTitle, currentProject)) >= bankSim) return
         persist()
-        currentKey = key
-        currentTitle = title
-        currentProject = project
         answers.clear()
         seenKeys.clear()
         blindAttempts.clear()
-        load()
-        Log.i(TAG, "切换题库: $title / $project (已存${answers.size}题)")
+
+        val matches = listBanks(context).filter {
+            similarity(incoming, bankId(it.title, it.project)) >= bankSim
+        }
+        if (matches.isNotEmpty()) {
+            // 复用最大的那个作为目标，把所有重复库的答案并进来、删掉多余文件。
+            val target = matches.maxByOrNull { it.sizeBytes }!!
+            currentFile = target.file
+            currentTitle = target.title
+            currentProject = target.project
+            for (m in matches) answers.putAll(loadEntries(m.file))
+            val extra = matches.filter { it.file != target.file }
+            if (extra.isNotEmpty()) {
+                extra.forEach { it.file.delete() }
+                persist()   // 合并结果落盘到 target
+                Log.i(TAG, "题库去重: 合并并删除 ${extra.size} 个重复库 -> '${target.title}'")
+            }
+        } else {
+            currentTitle = title
+            currentProject = project
+            currentFile = newFile(incoming)
+            load()
+        }
+        seenKeys.addAll(answers.keys)
+        Log.i(TAG, "切换题库: $currentTitle / $currentProject (已存${answers.size}题)")
     }
 
-    fun hasBank(): Boolean = currentKey != null
+    fun hasBank(): Boolean = currentFile != null
 
     fun bankLabel(): String = "$currentTitle / $currentProject"
 
@@ -128,11 +155,16 @@ class AnswerStore(private val context: Context) {
 
     // ---------------------------------------------------------------
 
-    private fun file(): File? {
-        val key = currentKey ?: return null
+    private fun file(): File? = currentFile
+
+    /** 题库同一性的归一化串：标题+项目只留中文/数字/字母，去掉引号/竖线/括号/加号等噪声，
+     *  专供模糊匹配同一题库用(分册号、括号内容、科室、年份这些区分信息都保留)。 */
+    private fun bankId(title: String, project: String): String =
+        (title + project).replace("[^a-zA-Z0-9\\u4e00-\\u9fff]".toRegex(), "")
+
+    private fun newFile(id: String): File {
         val dir = File(context.getExternalFilesDir(null), "banks").apply { mkdirs() }
-        val name = "bank_" + Integer.toHexString(key.hashCode()) + "_" + key.length + ".json"
-        return File(dir, name)
+        return File(dir, "bank_" + Integer.toHexString(id.hashCode()) + "_" + id.length + ".json")
     }
 
     private fun load() {
@@ -159,9 +191,6 @@ class AnswerStore(private val context: Context) {
             f.writeText(obj.toString())
         }.onFailure { Log.e(TAG, "persist failed", it) }
     }
-
-    private fun normalizeKey(s: String): String =
-        s.replace("\\s".toRegex(), "").replace("进行中", "")
 
     /**
      * 题干归一化：只保留 中文/数字/字母，去掉所有标点、空白、竖线等噪声。
