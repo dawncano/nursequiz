@@ -401,6 +401,7 @@ class DumpAccessibilityService : AccessibilityService() {
                     saveToFile("step", sb.toString())
                     copyToClipboard(sb.toString())
                     Log.i(TAG, "STEP ${model.kind} lines=${lines.size}")
+                    bmp.recycle()
                 }
             }
         }, 150)
@@ -418,8 +419,9 @@ class DumpAccessibilityService : AccessibilityService() {
             captureScreen { bmp ->
                 if (bmp == null) { onModel(null); return@captureScreen }
                 OcrEngine.recognize(bmp) { text ->
-                    if (text == null) { onModel(null); return@recognize }
-                    onModel(ScreenParser.parse(toLines(text)))
+                    val model = if (text == null) null else ScreenParser.parse(toLines(text))
+                    bmp.recycle()   // OCR 完即弃，高频循环下别留给 GC——每张 ~10MB
+                    onModel(model)
                 }
             }
         }, 120)
@@ -499,6 +501,7 @@ class DumpAccessibilityService : AccessibilityService() {
                             .append(" \"").append(l.text).append("\"\n")
                     saveToFile("ocr", sb.toString()); copyToClipboard(sb.toString())
                     toast("OCR 已导出")
+                    bmp.recycle()
                 }
             }
         }, 200)
