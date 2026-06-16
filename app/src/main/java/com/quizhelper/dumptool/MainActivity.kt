@@ -8,8 +8,11 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.text.InputType
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.Switch
 import android.widget.TextView
 
 /**
@@ -23,6 +26,7 @@ class MainActivity : Activity() {
     private lateinit var statusText: TextView
     private lateinit var storageInfo: TextView
     private lateinit var banksContainer: LinearLayout
+    private lateinit var settingsContainer: LinearLayout
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -31,6 +35,7 @@ class MainActivity : Activity() {
         statusText = findViewById(R.id.statusText)
         storageInfo = findViewById(R.id.storageInfo)
         banksContainer = findViewById(R.id.banksContainer)
+        settingsContainer = findViewById(R.id.settingsContainer)
 
         findViewById<Button>(R.id.openAccessibilityButton).setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -39,6 +44,59 @@ class MainActivity : Activity() {
             AnswerStore.clearTemp(this)
             refreshBanks()
         }
+        buildSettings()
+    }
+
+    /** 设置区：暴力/智能模式开关 + 目标组数 / step间隔 / UNKNOWN阈值 三个数字输入。
+     *  全部即时写入 Prefs，运行中的无障碍服务下一拍就会读到。 */
+    private fun buildSettings() {
+        settingsContainer.removeAllViews()
+
+        val modeSwitch = Switch(this).apply {
+            text = "暴力模式（关=智能模式）"
+            textSize = 15f
+            isChecked = Prefs.bruteMode(this@MainActivity)
+            setPadding(0, 12, 0, 12)
+            setOnCheckedChangeListener { _, checked -> Prefs.setBruteMode(this@MainActivity, checked) }
+        }
+        settingsContainer.addView(modeSwitch)
+
+        settingsContainer.addView(TextView(this).apply {
+            text = "暴力=纯盲选+建库不查表；智能=用题库答案替换盲选。建议先暴力跑几遍攒库，再切智能。"
+            textSize = 12f
+            setPadding(0, 0, 0, 12)
+        })
+
+        settingsContainer.addView(numberRow("目标组数（做满自动停）", Prefs.targetGroups(this).toString()) {
+            it.toIntOrNull()?.let { v -> Prefs.setTargetGroups(this, v) }
+        })
+        settingsContainer.addView(numberRow("单步间隔毫秒（越小越快，太小会出错）", Prefs.stepIntervalMs(this).toString()) {
+            it.toLongOrNull()?.let { v -> Prefs.setStepIntervalMs(this, v) }
+        })
+        settingsContainer.addView(numberRow("连续无法识别多少次就停下", Prefs.unknownLimit(this).toString()) {
+            it.toIntOrNull()?.let { v -> Prefs.setUnknownLimit(this, v) }
+        })
+    }
+
+    /** 一行"标签 + 数字输入框"，失焦时把内容写进 Prefs（save 回调）。 */
+    private fun numberRow(label: String, initial: String, save: (String) -> Unit): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 8, 0, 8)
+        }
+        row.addView(TextView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            text = label
+            textSize = 14f
+        })
+        row.addView(EditText(this).apply {
+            layoutParams = LinearLayout.LayoutParams(220, ViewGroup.LayoutParams.WRAP_CONTENT)
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setText(initial)
+            setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) save(text.toString()) }
+        })
+        return row
     }
 
     override fun onResume() {
