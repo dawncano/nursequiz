@@ -11,13 +11,16 @@ object Prefs {
 
     private const val KEY_BRUTE = "brute_mode"
     private const val KEY_TARGET = "target_groups"
-    private const val KEY_STEP = "step_interval_ms"
+    private const val KEY_STEP_BRUTE = "step_interval_brute_ms"
+    private const val KEY_STEP_SMART = "step_interval_smart_ms"
     private const val KEY_UNKNOWN = "unknown_limit"
 
-    // 默认值（也是文档里写定的）：默认暴力模式、14组、1300ms、连续5次UNKNOWN停。
+    // 默认值（也是文档里写定的）：默认暴力模式、14组、连续5次UNKNOWN停。
+    // step 间隔分两套：暴力不看题干文字、容忍更快(默认700)；智能要干净OCR匹配题库(默认1300)。
     const val DEF_BRUTE = true
     const val DEF_TARGET = 14
-    const val DEF_STEP = 1300L
+    const val DEF_STEP_BRUTE = 700L
+    const val DEF_STEP_SMART = 1300L
     const val DEF_UNKNOWN = 5
 
     private fun sp(c: Context) = c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -29,8 +32,14 @@ object Prefs {
     fun targetGroups(c: Context): Int = sp(c).getInt(KEY_TARGET, DEF_TARGET).coerceIn(1, 999)
     fun setTargetGroups(c: Context, v: Int) = sp(c).edit().putInt(KEY_TARGET, v.coerceIn(1, 999)).apply()
 
-    fun stepIntervalMs(c: Context): Long = sp(c).getLong(KEY_STEP, DEF_STEP).coerceIn(300L, 5000L)
-    fun setStepIntervalMs(c: Context, v: Long) = sp(c).edit().putLong(KEY_STEP, v.coerceIn(300L, 5000L)).apply()
+    fun stepIntervalBruteMs(c: Context): Long = sp(c).getLong(KEY_STEP_BRUTE, DEF_STEP_BRUTE).coerceIn(300L, 5000L)
+    fun setStepIntervalBruteMs(c: Context, v: Long) = sp(c).edit().putLong(KEY_STEP_BRUTE, v.coerceIn(300L, 5000L)).apply()
+
+    fun stepIntervalSmartMs(c: Context): Long = sp(c).getLong(KEY_STEP_SMART, DEF_STEP_SMART).coerceIn(300L, 5000L)
+    fun setStepIntervalSmartMs(c: Context, v: Long) = sp(c).edit().putLong(KEY_STEP_SMART, v.coerceIn(300L, 5000L)).apply()
+
+    /** 按当前模式返回该用的 step 间隔——`scheduleStep` 直接调它即可，模式切换下一拍生效。 */
+    fun stepIntervalMs(c: Context): Long = if (bruteMode(c)) stepIntervalBruteMs(c) else stepIntervalSmartMs(c)
 
     fun unknownLimit(c: Context): Int = sp(c).getInt(KEY_UNKNOWN, DEF_UNKNOWN).coerceIn(1, 50)
     fun setUnknownLimit(c: Context, v: Int) = sp(c).edit().putInt(KEY_UNKNOWN, v.coerceIn(1, 50)).apply()

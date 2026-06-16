@@ -70,8 +70,11 @@ class MainActivity : Activity() {
         settingsContainer.addView(numberRow("目标组数（做满自动停）", Prefs.targetGroups(this).toString()) {
             it.toIntOrNull()?.let { v -> Prefs.setTargetGroups(this, v) }
         })
-        settingsContainer.addView(numberRow("单步间隔毫秒（越小越快，太小会出错）", Prefs.stepIntervalMs(this).toString()) {
-            it.toLongOrNull()?.let { v -> Prefs.setStepIntervalMs(this, v) }
+        settingsContainer.addView(numberRow("暴力速度·单步毫秒（小=快，默认700）", Prefs.stepIntervalBruteMs(this).toString()) {
+            it.toLongOrNull()?.let { v -> Prefs.setStepIntervalBruteMs(this, v) }
+        })
+        settingsContainer.addView(numberRow("智能速度·单步毫秒（要干净OCR，默认1300）", Prefs.stepIntervalSmartMs(this).toString()) {
+            it.toLongOrNull()?.let { v -> Prefs.setStepIntervalSmartMs(this, v) }
         })
         settingsContainer.addView(numberRow("连续无法识别多少次就停下", Prefs.unknownLimit(this).toString()) {
             it.toIntOrNull()?.let { v -> Prefs.setUnknownLimit(this, v) }
