@@ -50,6 +50,9 @@ class AnswerStore(private val context: Context) {
         return answers[k]
     }
 
+    /** 给外部(失败计数等)用的稳定题干key，复用与 get() 相同的模糊归并逻辑，只读不登记。 */
+    fun keyFor(question: String): String? = canonical(question, addIfNew = false)
+
     /** 记入正确答案并立即落盘。 */
     fun put(question: String, letters: String) {
         if (letters.isEmpty()) return
@@ -94,7 +97,16 @@ class AnswerStore(private val context: Context) {
         if (maxLen == 0) return 1.0
         if (kotlin.math.abs(a.length - b.length) > maxLen * 0.35) return 0.0
         val dist = levenshtein(a, b)
-        return 1.0 - dist.toDouble() / maxLen
+        val fullSim = 1.0 - dist.toDouble() / maxLen
+        // 案例组合题：多道子题共享很长的病史前缀，只有末尾10-20字不同。
+        // 仅用全串相似度会把不同子题归并成同一题。
+        // 额外检查末尾40字的相似度，末尾不同的两题必须同时通过两个门槛才算同一题。
+        if (maxLen > 60) {
+            val sfxLen = minOf(40, maxLen)
+            val sfxSim = 1.0 - levenshtein(a.takeLast(sfxLen), b.takeLast(sfxLen)).toDouble() / sfxLen
+            return minOf(fullSim, sfxSim)
+        }
+        return fullSim
     }
 
     private fun levenshtein(a: String, b: String): Int {

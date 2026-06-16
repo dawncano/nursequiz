@@ -64,7 +64,14 @@ class DumpAccessibilityService : AccessibilityService() {
     private var answered = 0
     private var blindRound = 0             // 本组当前轮次(0=A,1=B…)，每次"提交"+1
     private var groupInProgress = false    // 是否正在做某一组(用于判断回到任务页=一组完成)
+    private var lastQuestionText = ""      // QUESTION页的题干，用于FEEDBACK存答案(避免FEEDBACK多出解析文字)
     private val stepIntervalMs = 1300L
+
+    // 兜底：已存答案连续"判错"次数(按题干稳定key)。达到上限就不再信任存档答案，
+    // 改走 blindRound 轮流盲选——保证哪怕坐标/识别出了我们没预料到的错，也能跳出死循环。
+    private val failCount = HashMap<String, Int>()
+    private var lastTapKey: String? = null
+    private val failLimit = 2
 
     private val colorIdle = 0xFF3F51B5.toInt()
     private val colorRun = 0xFF2E7D32.toInt()
@@ -89,6 +96,7 @@ class DumpAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         isRunning = true
         store = AnswerStore(this)
+        installCrashCleanup()
         addOverlay()
         val filter = IntentFilter().apply {
             addAction("com.quizhelper.dumptool.START")
@@ -109,10 +117,20 @@ class DumpAccessibilityService : AccessibilityService() {
     private fun cleanup() {
         isRunning = false
         auto = false
+        clearDumps()   // 服务被解绑/系统关闭也算"结束"，不能依赖手动点清理按钮才删临时文件
         runCatching { unregisterReceiver(cmdReceiver) }
         overlay?.let { runCatching { windowManager?.removeView(it) } }
         overlay = null
         autoButton = null
+    }
+
+    /** 进程意外崩溃时尽力清一次临时文件再交还给系统默认处理（不吞掉崩溃，只是顺手清理）。 */
+    private fun installCrashCleanup() {
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, ex ->
+            runCatching { clearDumps() }
+            prev?.uncaughtException(thread, ex)
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -208,6 +226,9 @@ class DumpAccessibilityService : AccessibilityService() {
         answered = 0
         blindRound = 0
         groupInProgress = false
+        lastQuestionText = ""
+        failCount.clear()
+        lastTapKey = null
         updateAutoButton()
         toast("开始自动答题，目标 $targetGroups 组")
         scheduleStep()
@@ -218,6 +239,7 @@ class DumpAccessibilityService : AccessibilityService() {
         auto = false
         setOverlayVisible(true)
         updateAutoButton()
+        clearDumps()   // 不管是手动停止还是达到目标组数自动停止，都顺手清掉本次运行的调试临时文件
         Log.i(TAG, "STOP: $reason (groups=$groupsDone answered=$answered)")
         toast("已停止：$reason（完成 $groupsDone 组，答 $answered 题）")
     }
@@ -242,6 +264,7 @@ class DumpAccessibilityService : AccessibilityService() {
                     groupsDone++
                     blindRound = 0
                     groupInProgress = false
+                    failCount.clear()
                     updateAutoButton()
                     Log.i(TAG, "ACT TASK_DETAIL 一组完成 groupsDone=$groupsDone")
                     if (groupsDone >= targetGroups) { stopAuto("已达目标 $targetGroups 组"); return }
@@ -256,14 +279,21 @@ class DumpAccessibilityService : AccessibilityService() {
                     Log.w(TAG, "ACT QUESTION 无选项或无确定, 跳过 q='${m.questionText}'")
                     finishStep(); return
                 }
-                val known = store.get(m.questionText)
+                lastQuestionText = m.questionText   // 保存题干，供 FEEDBACK 存答案用
+                val key = store.keyFor(m.questionText)
+                // 兜底：这题用存档答案已经连续判错够次数，说明存档答案本身没问题(FEEDBACK每次
+                // 都会用当时识别的"正确答案"覆盖存档)，但点击始终没能命中——不再信任存档，
+                // 改走 blindRound 轮流盲选(每次提交换一个字母)，保证最终能跳出死循环。
+                val distrusted = key != null && failCount.getOrDefault(key, 0) >= failLimit
+                val known = if (distrusted) null else store.get(m.questionText)
                 val idxs = if (known != null) {
                     lettersToIdx(known)
                 } else {
-                    // 没学到：本轮统一用 blindRound 对应的字母(A=0,B=1…)，每次提交后+1。
+                    // 没学到或已被标记不可信：本轮统一用 blindRound 对应的字母(A=0,B=1…)，每次提交后+1。
                     listOf(blindRound % m.options.size)
                 }
-                Log.i(TAG, "ACT QUESTION q='${m.questionText}' opts=${m.options.size} known=$known tapIdx=$idxs")
+                lastTapKey = key
+                Log.i(TAG, "ACT QUESTION q='${m.questionText}' opts=${m.options.size} known=$known distrusted=$distrusted tapIdx=$idxs")
                 tapSequence(idxs.filter { it < m.options.size }.map { m.options[it] }) {
                     tap(m.confirm)
                     finishStep()
@@ -271,10 +301,27 @@ class DumpAccessibilityService : AccessibilityService() {
             }
             ScreenKind.FEEDBACK -> {
                 val letters = idxToLetters(m.correctIdx)
-                Log.i(TAG, "ACT FEEDBACK q='${m.questionText}' correct=$letters")
-                if (m.correctIdx.isNotEmpty() && m.questionText.isNotEmpty()) {
-                    store.put(m.questionText, letters)
+                // 用 QUESTION 页保存的题干存答案——FEEDBACK 页题干末尾会多出解析说明文字，
+                // 长度不同导致模糊匹配失败，下次 get() 找不到答案。
+                val storeKey = lastQuestionText.takeIf { it.isNotEmpty() } ?: m.questionText
+                lastQuestionText = ""
+                Log.i(TAG, "ACT FEEDBACK q='${m.questionText}' correct=$letters your=${idxToLetters(m.yourIdx)}")
+                if (m.correctIdx.isNotEmpty() && storeKey.isNotEmpty()) {
+                    store.put(storeKey, letters)
                 }
+                // 用页面上"你的答案"核实点击是否真的命中——而不是看我们打算点哪个下标，
+                // 这样才能查出"答案查对了但点击没点中"这类问题(如选项坐标行被OCR换行残字顶歪)。
+                val key = lastTapKey
+                if (key != null && m.yourIdx.isNotEmpty() && m.correctIdx.isNotEmpty()) {
+                    if (m.yourIdx.toSet() != m.correctIdx.toSet()) {
+                        val n = failCount.getOrDefault(key, 0) + 1
+                        failCount[key] = n
+                        Log.w(TAG, "ACT FEEDBACK 命中失败 第${n}次 your=${m.yourIdx} correct=${m.correctIdx}")
+                    } else {
+                        failCount.remove(key)
+                    }
+                }
+                lastTapKey = null
                 answered++
                 tap(m.nextBtn); finishStep()
             }
@@ -456,12 +503,9 @@ class DumpAccessibilityService : AccessibilityService() {
     // 工具
     // ---------------------------------------------------------------------
 
-    /** 清空临时文件目录(调试导出的截图/OCR/STEP等)。自动答题不写这些，仅调试广播会写。 */
-    private fun clearDumps() {
-        runCatching {
-            File(getExternalFilesDir(null), "dumps").listFiles()?.forEach { it.delete() }
-        }
-    }
+    /** 清空临时文件目录(调试导出的截图/OCR/STEP等)。自动答题不写这些，仅调试广播会写。
+     *  每组/每轮提交、手动或自动停止、服务被解绑、进程崩溃前都会调用，避免越用越大。 */
+    private fun clearDumps() = AnswerStore.clearTemp(this)
 
     private fun saveToFile(prefix: String, text: String) {
         runCatching {

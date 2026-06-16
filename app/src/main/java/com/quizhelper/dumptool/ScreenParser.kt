@@ -19,6 +19,7 @@ data class ScreenModel(
     val startBtn: XY? = null,                // "开始答题"
     val dialogConfirm: XY? = null,           // 提交弹窗"确定"
     val correctIdx: List<Int> = emptyList(), // 正确答案的选项下标(0=A)
+    val yourIdx: List<Int> = emptyList(),    // FEEDBACK页"你的答案"实际选项下标(0=A)，用于核实点击是否真的命中
     val title: String = "",
     val project: String = ""
 ) {
@@ -31,6 +32,7 @@ data class ScreenModel(
         startBtn?.let { append("start=$it\n") }
         dialogConfirm?.let { append("dialogConfirm=$it\n") }
         if (correctIdx.isNotEmpty()) append("correctIdx=$correctIdx\n")
+        if (yourIdx.isNotEmpty()) append("yourIdx=$yourIdx\n")
         if (title.isNotEmpty()) append("title=\"$title\" project=\"$project\"\n")
     }
 }
@@ -123,7 +125,10 @@ object ScreenParser {
             .minOrNull() ?: 2000
         val regionLines = lines.filter { it.box.cy() in (regionTop + 1) until regionBottom }
 
-        val rows = clusterRows(regionLines, 50)
+        // 阈值50px时，选项文字换行后多出的单字行(如"血")离主行约51px，会被
+        // 误判成独立的"选项行"，把后面选项坐标全部顶歪一位。选项间真实间距≥110px，
+        // 提到65px仍有足够安全边际，同时能把换行残字并回原行。
+        val rows = clusterRows(regionLines, 65)
         // 选项靠"行首是 A-E 字母(后跟空格/标点/结尾)"识别——选项前都有圈字母。
         // 这样不管题干多长(含大段病史+问句)都不会被误切。字母后紧跟中文的(如"A型血")不算。
         val optLetter = Regex("^[A-E]([ .、，|]|$)")
@@ -140,6 +145,7 @@ object ScreenParser {
         val questionText = qRows.joinToString("") { it.text }.trim()
         val options = optRows.map { XY(it.box.cx(), it.cy) }
         val correct = ansLine?.let { lettersFrom(it.text) } ?: emptyList()
+        val yours = ansLine?.let { yoursFrom(it.text) } ?: emptyList()
 
         return ScreenModel(
             kind = kind,
@@ -148,7 +154,8 @@ object ScreenParser {
             options = options,
             confirm = confirmLine?.box?.let { XY(it.cx(), it.cy()) },
             nextBtn = nextLine?.box?.let { XY(it.cx(), it.cy()) },
-            correctIdx = correct
+            correctIdx = correct,
+            yourIdx = yours
         )
     }
 
@@ -180,6 +187,12 @@ object ScreenParser {
     private fun lettersFrom(text: String): List<Int> {
         val seg = if (text.contains("你的")) text.substringBefore("你的") else text
         return seg.filter { it in 'A'..'E' }.map { it - 'A' }.distinct()
+    }
+
+    /** 从 "正确答案:C你的答案:A" 提取"你的答案"部分的下标——核实点击是否真的命中了打算选的项。 */
+    private fun yoursFrom(text: String): List<Int> {
+        if (!text.contains("你的")) return emptyList()
+        return text.substringAfter("你的").filter { it in 'A'..'E' }.map { it - 'A' }.distinct()
     }
 
     private fun strip(s: String): String = s.replace(" ", "").replace("|", "")
