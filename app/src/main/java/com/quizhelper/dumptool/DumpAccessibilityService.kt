@@ -2,6 +2,9 @@ package com.quizhelper.dumptool
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -249,7 +252,30 @@ class DumpAccessibilityService : AccessibilityService() {
         updateAutoButton()
         clearDumps()   // 不管是手动停止还是达到目标组数自动停止，都顺手清掉本次运行的调试临时文件
         Log.i(TAG, "STOP: $reason (groups=$groupsDone answered=$answered)")
-        toast("已停止：$reason（完成 $groupsDone 组，答 $answered 题）")
+        val summary = "$reason（完成 $groupsDone 组，答 $answered 题）"
+        toast("已停止：$summary")
+        // 非手动停止(达标完成 / 卡住需人工)再发一条通知——无人值守时 toast 一闪而过看不到。
+        if (reason != "手动停止") notifyStop(summary)
+    }
+
+    /** 发一条"自动答题已停止"的通知。Android13+ 没授通知权限时系统会静默丢弃，不影响其它逻辑。 */
+    private fun notifyStop(msg: String) {
+        runCatching {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val chId = "quiz_auto_stop"
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                nm.createNotificationChannel(
+                    NotificationChannel(chId, "自动答题停止提醒", NotificationManager.IMPORTANCE_HIGH)
+                )
+            }
+            val n = Notification.Builder(this, chId)
+                .setSmallIcon(android.R.drawable.stat_sys_warning)
+                .setContentTitle("自动答题已停止")
+                .setContentText(msg)
+                .setAutoCancel(true)
+                .build()
+            nm.notify(1001, n)
+        }
     }
 
     private fun scheduleStep() {

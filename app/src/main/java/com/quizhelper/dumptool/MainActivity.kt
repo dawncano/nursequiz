@@ -45,6 +45,17 @@ class MainActivity : Activity() {
             refreshBanks()
         }
         buildSettings()
+        requestNotifyPermissionIfNeeded()
+    }
+
+    /** Android13+ 发通知要运行期权限——首次进来弹一次，授不授都不影响主流程(通知只是锦上添花)。 */
+    private fun requestNotifyPermissionIfNeeded() {
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
     }
 
     /** 设置区：暴力/智能模式开关 + 目标组数 / step间隔 / UNKNOWN阈值 三个数字输入。
