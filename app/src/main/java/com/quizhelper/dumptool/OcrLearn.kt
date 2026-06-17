@@ -21,8 +21,16 @@ object OcrLearn {
 
     // 候选对(无向，key="较小字|较大字") -> 被混淆计数
     private val pairCount = HashMap<String, Int>()
+    // 每个字在所有题干里出现的总次数 -> 用来定"哪个更可能是对的"：正确字在每次正确识别里
+    // 都出现(频率高)，错字只在偶尔误识别里出现(频率低)，所以频率高的优先当代表。
+    private val charFreq = HashMap<String, Int>()
     private var appCtx: Context? = null
     private var dirty = 0
+
+    /** 统计字频(每处理一段题干就喂一次)，给候选定方向用。 */
+    fun noteText(s: String) {
+        for (c in s) { val k = c.toString(); charFreq[k] = (charFreq[k] ?: 0) + 1 }
+    }
 
     fun init(context: Context) {
         if (appCtx != null) return   // 进程内单例，已初始化就别再 load 覆盖内存里的累积
@@ -57,9 +65,13 @@ object OcrLearn {
         val out = ArrayList<Triple<String, String, Int>>()
         for ((k, c) in pairCount) {
             if (c < MIN_TOTAL) continue
-            val (x, y) = k.split("|")
-            val denom = maxOf(memberTotal[x] ?: c, memberTotal[y] ?: c)
-            if (denom > 0 && c.toDouble() / denom >= MIN_DOMINANCE) out.add(Triple(x, y, c))
+            val (a, b) = k.split("|")
+            val denom = maxOf(memberTotal[a] ?: c, memberTotal[b] ?: c)
+            if (denom > 0 && c.toDouble() / denom >= MIN_DOMINANCE) {
+                // 字频高的当代表(更可能是对的)放前面，确认入表时它就是规范写法。
+                val (x, y) = if ((charFreq[a] ?: 0) >= (charFreq[b] ?: 0)) a to b else b to a
+                out.add(Triple(x, y, c))
+            }
         }
         return out.sortedByDescending { it.third }
     }
@@ -89,6 +101,7 @@ object OcrLearn {
     /** 清空内存里的候选(配合 AnswerStore.wipeAllData；候选文件已被整目录删除)。 */
     fun clearAll() {
         pairCount.clear()
+        charFreq.clear()
     }
 
     private fun pairKey(a: String, b: String): String =
@@ -99,8 +112,9 @@ object OcrLearn {
         runCatching {
             val f = File(ctx.getExternalFilesDir(null), FILE)
             if (!f.exists()) return
-            val obj = JSONObject(f.readText()).optJSONObject("pairs") ?: return
-            for (k in obj.keys()) pairCount[k] = obj.getInt(k)
+            val root = JSONObject(f.readText())
+            root.optJSONObject("pairs")?.let { o -> for (k in o.keys()) pairCount[k] = o.getInt(k) }
+            root.optJSONObject("freq")?.let { o -> for (k in o.keys()) charFreq[k] = o.getInt(k) }
         }.onFailure { Log.e(TAG, "OcrLearn load failed", it) }
     }
 
@@ -110,8 +124,13 @@ object OcrLearn {
         runCatching {
             val pairs = JSONObject()
             for ((k, c) in pairCount) pairs.put(k, c)
+            // 只存"出现在候选对里的字"的频率(定方向够用)，避免整张字频表越存越大。
+            val needed = HashSet<String>()
+            for (k in pairCount.keys) k.split("|").forEach { needed.add(it) }
+            val freq = JSONObject()
+            for (k in needed) charFreq[k]?.let { freq.put(k, it) }
             val f = File(ctx.getExternalFilesDir(null), FILE)
-            f.writeText(JSONObject().put("pairs", pairs).toString())
+            f.writeText(JSONObject().put("pairs", pairs).put("freq", freq).toString())
         }.onFailure { Log.e(TAG, "OcrLearn save failed", it) }
     }
 }

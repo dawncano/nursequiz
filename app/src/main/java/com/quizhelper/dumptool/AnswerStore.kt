@@ -45,24 +45,29 @@ class AnswerStore(private val context: Context) {
             similarity(incoming, bankId(it.title, it.project)) >= bankSim
         }
         if (matches.isNotEmpty()) {
-            // 复用最大的那个作为目标，把所有重复库的答案并进来、删掉多余文件。
+            // 文件复用最大的(答案最多)，但**显示名取最干净的形**：各变体过 OcrFix(纠正
+            // 急诊利→急诊科、孝试→考试…)+去掉竖线，再取多数(并列取最长)。不让错的形显示在上面。
             val target = matches.maxByOrNull { it.sizeBytes }!!
             currentFile = target.file
-            currentTitle = target.title
-            currentProject = target.project
+            currentTitle = bestName(matches.map { it.title } + title)
+            currentProject = bestName(matches.map { it.project } + project)
             for (m in matches) answers.putAll(loadEntries(m.file))
+            // 题库名变体之间的字差异也喂给 OCR 候选(去标点后逐位比)，让"考/孝、科/利"这类
+            // 名字里的误识别也能进待确认列表。
+            val rawTitles = (matches.map { it.title } + title).map { normalizeQuestion(it) }
+            val rawProjs = (matches.map { it.project } + project).map { normalizeQuestion(it) }
+            observeAllPairs(rawTitles); observeAllPairs(rawProjs)
             val extra = matches.filter { it.file != target.file }
-            if (extra.isNotEmpty()) {
-                extra.forEach { it.file.delete() }
-                persist()   // 合并结果落盘到 target
-                Log.i(TAG, "题库去重: 合并并删除 ${extra.size} 个重复库 -> '${target.title}'")
-            }
+            extra.forEach { it.file.delete() }
+            persist()   // 合并结果(含清洗后的名字)落盘到 target
+            if (extra.isNotEmpty()) Log.i(TAG, "题库去重: 合并并删除 ${extra.size} 个重复库 -> '$currentTitle'")
         } else {
-            currentTitle = title
-            currentProject = project
+            currentTitle = cleanName(title)
+            currentProject = cleanName(project)
             currentFile = newFile(incoming)
             load()
         }
+        OcrLearn.noteText(normalizeQuestion(currentTitle) + normalizeQuestion(currentProject))
         seenKeys.addAll(answers.keys)
         Log.i(TAG, "切换题库: $currentTitle / $currentProject (已存${answers.size}题)")
     }
@@ -107,6 +112,7 @@ class AnswerStore(private val context: Context) {
     private fun canonical(question: String, addIfNew: Boolean): String? {
         val norm = normalizeQuestion(question)
         if (norm.isEmpty()) return null
+        OcrLearn.noteText(norm)   // 统计字频，给 OCR 候选定"哪个更可能对"的方向
         // 快路径：归一化后正好命中已存答案的 key（题干稳定时是常态）→ O(1) 直接返回，
         // 免去对整库逐题算 Levenshtein 的慢扫描。题库越大，这条快路径省得越多。
         if (answers.containsKey(norm)) return norm
@@ -169,6 +175,23 @@ class AnswerStore(private val context: Context) {
      *  专供模糊匹配同一题库用(分册号、括号内容、科室、年份这些区分信息都保留)。 */
     private fun bankId(title: String, project: String): String =
         (title + project).replace("[^a-zA-Z0-9\\u4e00-\\u9fff]".toRegex(), "")
+
+    /** 名字清洗：过 OcrFix 等价表(纠已知误识别)、去掉竖线杂质、去首尾空白。 */
+    private fun cleanName(raw: String): String = OcrFix.fix(raw).replace("|", "").trim()
+
+    /** 从一堆变体里挑"最干净/最可能对"的显示名：各自清洗后取出现最多的(并列取最长)。 */
+    private fun bestName(variants: List<String>): String {
+        val cleaned = variants.map { cleanName(it) }.filter { it.isNotEmpty() }
+        if (cleaned.isEmpty()) return variants.firstOrNull()?.let { cleanName(it) } ?: ""
+        return cleaned.groupingBy { it }.eachCount().entries
+            .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenByDescending { it.key.length })
+            .first().key
+    }
+
+    /** 把一组字符串两两喂给 OcrLearn(同长度才比)，攒名字里的等价候选。 */
+    private fun observeAllPairs(items: List<String>) {
+        for (i in items.indices) for (j in i + 1 until items.size) OcrLearn.observe(items[i], items[j])
+    }
 
     private fun newFile(id: String): File {
         val dir = File(context.getExternalFilesDir(null), "banks").apply { mkdirs() }

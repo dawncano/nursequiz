@@ -38,6 +38,7 @@ class MainActivity : Activity() {
         banksContainer = findViewById(R.id.banksContainer)
         settingsContainer = findViewById(R.id.settingsContainer)
         learnContainer = findViewById(R.id.learnContainer)
+        OcrFix.load(this)
         OcrLearn.init(this)
 
         findViewById<Button>(R.id.openAccessibilityButton).setOnClickListener {
@@ -198,8 +199,9 @@ class MainActivity : Activity() {
         val info = TextView(this).apply {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             textSize = 14f
-            val title = b.title.ifEmpty { "(未命名)" }
-            text = "$title\n${b.project}　·　已记 ${b.count} 题　·　${b.sizeBytes / 1024}KB"
+            val title = OcrFix.fix(b.title).replace("|", "").ifEmpty { "(未命名)" }
+            val proj = OcrFix.fix(b.project).replace("|", "")
+            text = "$title\n$proj　·　已记 ${b.count} 题　·　${b.sizeBytes / 1024}KB"
         }
         // 展开/收起：展开后列出该库所有"题干→答案"条目，可改可删。
         val entries = LinearLayout(this).apply {
