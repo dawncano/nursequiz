@@ -68,6 +68,8 @@ class DumpAccessibilityService : AccessibilityService() {
     private var blindRound = 0             // 本组当前轮次(0=A,1=B…)，每次"提交"+1
     private var groupInProgress = false    // 是否正在做某一组(用于判断回到任务页=一组完成)
     private var lastQuestionText = ""      // QUESTION页的题干，用于FEEDBACK存答案(避免FEEDBACK多出解析文字)
+    private var lastStuckQ = ""            // 连续卡在同一题的检测
+    private var sameQCount = 0
 
     // 兜底：已存答案连续"判错"次数(按题干稳定key)。达到上限就不再信任存档答案，
     // 改走 blindRound 轮流盲选——保证哪怕坐标/识别出了我们没预料到的错，也能跳出死循环。
@@ -235,6 +237,8 @@ class DumpAccessibilityService : AccessibilityService() {
         blindRound = 0
         groupInProgress = false
         lastQuestionText = ""
+        lastStuckQ = ""
+        sameQCount = 0
         failCount.clear()
         lastTapKey = null
         lastTapIntended = emptyList()
@@ -323,19 +327,36 @@ class DumpAccessibilityService : AccessibilityService() {
                 // 字母，单字母盲选永远凑不出来，不查表会一直错、卡死那一组。配合 FEEDBACK 照常
                 // 建库：第1轮盲选错→学到完整答案(如ABD)→第2轮查表命中。
                 // 智能模式：都查表；若存档答案连续判错够次数(distrusted)则不信任、退回盲选。
+                // 兜底：同一题连续出现多次=画面没推进(卡住)。降级这个key+换盲选字母打破死循环。
+                if (m.questionText == lastStuckQ) sameQCount++ else { sameQCount = 0; lastStuckQ = m.questionText }
+                if (sameQCount >= 6) {
+                    if (key != null) failCount[key] = failLimit
+                    blindRound++
+                    sameQCount = 0
+                    Log.w(TAG, "ACT QUESTION 同一题卡了6次 -> 降级+换盲选字母 blindRound=$blindRound")
+                }
+
                 val distrusted = key != null && failCount.getOrDefault(key, 0) >= failLimit
                 val skipBank = distrusted || (brute && !m.isMulti)
                 val known = if (skipBank) null else store.get(m.questionText)
-                val idxs = if (known != null) {
+                var idxs = if (known != null) {
                     lettersToIdx(known)
                 } else {
                     // 没学到/暴力模式/已被标记不可信：本轮统一用 blindRound 对应的字母(A=0,B=1…)。
                     listOf(blindRound % m.options.size)
                 }
+                // 关键修复：存档答案的下标若全部超出当前选项数(题库存错/选项数变了，如4选项却存了E)，
+                // 空点会卡死——退回盲选并标记不可信，随后反馈页会用正确答案覆盖、自愈。
+                if (idxs.none { it < m.options.size }) {
+                    if (key != null) failCount[key] = failLimit
+                    Log.w(TAG, "ACT QUESTION 存档答案下标超界(idx=$idxs opts=${m.options.size}) -> 退回盲选")
+                    idxs = listOf(blindRound % m.options.size)
+                }
+                val valid = idxs.filter { it < m.options.size }
                 lastTapKey = key
-                lastTapIntended = idxs.filter { it < m.options.size }
-                Log.i(TAG, "ACT QUESTION brute=$brute q='${m.questionText}' opts=${m.options.size} known=$known distrusted=$distrusted tapIdx=$idxs")
-                tapSequence(idxs.filter { it < m.options.size }.map { m.options[it] }) {
+                lastTapIntended = valid
+                Log.i(TAG, "ACT QUESTION brute=$brute q='${m.questionText}' opts=${m.options.size} known=$known distrusted=$distrusted tapIdx=$valid")
+                tapSequence(valid.map { m.options[it] }) {
                     tap(m.confirm)
                     finishStep()
                 }

@@ -165,7 +165,7 @@ object ScreenParser {
         val questionText = regionLines.filter { it.box.cy() < qBottom }
             .sortedWith(compareBy({ it.box.top / 30 }, { it.box.left }))
             .joinToString("") { it.text }.trim()
-        val options = optRows.map { XY(it.box.cx(), it.cy) }
+        val options = inferOptions(optRows, confirmLine?.box?.top)
         val correct = ansLine?.let { lettersFrom(it.text) } ?: emptyList()
         val yours = ansLine?.let { yoursFrom(it.text) } ?: emptyList()
 
@@ -203,6 +203,29 @@ object ScreenParser {
             val txt = grp.sortedBy { it.box.left }.joinToString(" ") { it.text }
             Row(box, txt, (box.top + box.bottom) / 2)
         }
+    }
+
+    /** 选项点击坐标。ML Kit 偶尔漏识别某个选项(尤其最后一个 E：圈和文字都没返回)，但选项圈
+     *  是等间距排列的——按行间距外推，补齐"确定"按钮之前还放得下的空槽位，用圈所在的 x 坐标兜底
+     *  点击(点击靠坐标、不需要文字)。这样 5 选项题不会被当成 4 选项、盲选也能轮到 E。 */
+    private fun inferOptions(optRows: List<Row>, confirmTop: Int?): List<XY> {
+        val detected = optRows.map { XY(it.box.cx(), it.cy) }
+        if (detected.size < 2 || confirmTop == null) return detected
+        val ys = optRows.map { it.cy }
+        val gaps = ys.zipWithNext { a, b -> b - a }.filter { it in 60..220 }.sorted()
+        if (gaps.isEmpty()) return detected
+        val spacing = gaps[gaps.size / 2]
+        val circleX = optRows.minOf { it.box.left } + 12
+        val full = ArrayList<XY>()
+        var slot = ys.first()
+        var guard = 0
+        while (slot < confirmTop - spacing * 0.6 && guard++ < 8) {
+            val near = detected.minByOrNull { abs(it.y - slot) }
+            if (near != null && abs(near.y - slot) < spacing * 0.4) full.add(near)
+            else full.add(XY(circleX, slot))   // 该槽位没检测到选项 = 被漏识别，补齐
+            slot += spacing
+        }
+        return if (full.size > detected.size) full else detected
     }
 
     /** 从 "正确答案:C你的答案:A" 提取正确字母下标。用"你的"切分(在它之前=正确答案部分)，
