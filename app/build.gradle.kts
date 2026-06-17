@@ -15,9 +15,27 @@ android {
         versionName = "1.0"
     }
 
+    applicationVariants.all {
+        val variant = this
+        variant.outputs.all {
+            val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
+            output.outputFileName = "NurseQuiz-${variant.versionName}-${variant.buildType.name}.apk"
+        }
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file("../huli_release.jks")
+            storePassword = "huli2026"
+            keyAlias = "huli"
+            keyPassword = "huli2026"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

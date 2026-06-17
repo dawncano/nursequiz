@@ -1,4 +1,4 @@
-# 护理刷题自动答题工具 — 需求文档
+# NurseQuiz — 护理答题助手需求文档
 
 > 本文档汇总所有已确认的需求、界面事实和决策，后续改动先更新本文档再动代码。
 > 工程路径：`E:\code\new`，包名 `com.quizhelper.dumptool`。编译/装机命令见内存条目 [`reference-build-commands`](C:\Users\huangcan\.claude\projects\E--code-new\memory\reference-build-commands.md)。
