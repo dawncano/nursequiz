@@ -1,37 +1,76 @@
 package com.quizhelper.dumptool
 
+import android.content.Context
+import android.util.Log
+import org.json.JSONObject
+import java.io.File
+
 /**
- * OCR 容错替换表：把已知的常见误识别字词替换回正确写法。
- * 目的有两个：① 提高界面/答案识别正确率；② 让同一题在不同界面的 OCR 结果更一致，
- *           配合 AnswerStore 的模糊匹配，使"学习"和"盲选轮换"的 key 更稳定。
+ * OCR 等价对照表：把同一文字的 OCR 变体归一成同一个写法。
  *
- * 发现新的稳定误识别(同一处总是错成同样的字)就往 table 里加一行即可。
- * 注意：只放"几乎不会误伤正常文本"的替换；拿不准的交给模糊匹配处理。
+ * 不分"对/错"——只把一组互相等价(可互换)的写法都替换成组内第一个(规范代表)。
+ * 这样既绕开了"哪个才是对的"这种判不准的难题，又能让同一题在不同界面/不同轮次的
+ * OCR 结果一致，配合 AnswerStore 的模糊匹配，使题库 key、界面按钮匹配更稳定。
+ *
+ * 表来源(叠加)：
+ *  ① 内置 `assets/ocrfix.json`(随 APK 发布的初始全表)；
+ *  ② `files/ocrfix_user.json`(用户在界面里确认新增的，同格式)，存在则叠加在内置表之上。
+ * `load(context)` 在服务启动时调一次；读不到就退回下面的 FALLBACK，保证 fix() 永远可用。
  */
 object OcrFix {
 
-    private val table: List<Pair<String, String>> = listOf(
-        // 同形/异体符号
-        "ー" to "一",          // 片假名长音符 → 汉字"一"（"下一题"常被认成"下ー题"）
-        "．" to ".",
-        // 已观察到的稳定误识别
-        "正确苔案" to "正确答案",
-        "苔案" to "答案",
-        "半选题" to "单选题",
-        "里还题" to "多选题",
-        "池缓性" to "弛缓性",
-        "肾枳水" to "肾积水",
-        "骨幸引" to "骨牵引",
-        "临庆" to "临床",
-        "闭台复位" to "闭合复位",
+    // 内置兜底(assets 读取失败时用)。完整初始表在 assets/ocrfix.json。
+    private val FALLBACK: List<List<String>> = listOf(
+        listOf("一", "ー"),
+        listOf("正确答案", "正确苔案"),
+        listOf("答案", "苔案"),
+        listOf("单选题", "半选题", "里还题"),
+        listOf("下一题", "下ー题"),
     )
 
+    @Volatile private var groups: List<List<String>> = FALLBACK
+
+    /** 从内置 assets + 用户 files 两个 JSON 加载等价组；任一失败都不影响(各自跳过)。 */
+    fun load(context: Context) {
+        val all = ArrayList<List<String>>()
+        runCatching {
+            context.assets.open("ocrfix.json").use { all.addAll(parse(it.readBytes().decodeToString())) }
+        }.onFailure { Log.e(TAG, "load assets ocrfix.json failed", it) }
+        runCatching {
+            val uf = File(context.getExternalFilesDir(null), "ocrfix_user.json")
+            if (uf.exists()) all.addAll(parse(uf.readText()))
+        }.onFailure { Log.e(TAG, "load user ocrfix failed", it) }
+        if (all.isNotEmpty()) {
+            groups = all
+            Log.i(TAG, "OcrFix 载入 ${all.size} 组等价写法")
+        }
+    }
+
+    /** 把文本里每组的非代表写法替换成该组代表(组内第一个)。 */
     fun fix(s: String): String {
         if (s.isEmpty()) return s
         var t = s
-        for ((wrong, right) in table) {
-            if (t.contains(wrong)) t = t.replace(wrong, right)
+        for (g in groups) {
+            if (g.size < 2) continue
+            val rep = g[0]
+            for (i in 1 until g.size) {
+                if (t.contains(g[i])) t = t.replace(g[i], rep)
+            }
         }
         return t
     }
+
+    private fun parse(json: String): List<List<String>> {
+        val arr = JSONObject(json).optJSONArray("groups") ?: return emptyList()
+        val out = ArrayList<List<String>>()
+        for (i in 0 until arr.length()) {
+            val g = arr.optJSONArray(i) ?: continue
+            val members = ArrayList<String>()
+            for (j in 0 until g.length()) g.optString(j).takeIf { it.isNotEmpty() }?.let { members.add(it) }
+            if (members.size >= 2) out.add(members)
+        }
+        return out
+    }
+
+    private const val TAG = "DumpTool"
 }

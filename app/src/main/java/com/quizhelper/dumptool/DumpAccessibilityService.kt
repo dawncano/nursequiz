@@ -103,6 +103,7 @@ class DumpAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         isRunning = true
         store = AnswerStore(this)
+        OcrFix.load(this)   // 载入等价对照表(内置 assets + 用户 files)
         installCrashCleanup()
         addOverlay()
         val filter = IntentFilter().apply {
