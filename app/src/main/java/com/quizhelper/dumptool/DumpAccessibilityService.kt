@@ -104,6 +104,7 @@ class DumpAccessibilityService : AccessibilityService() {
         isRunning = true
         store = AnswerStore(this)
         OcrFix.load(this)   // 载入等价对照表(内置 assets + 用户 files)
+        OcrLearn.init(this) // 载入 OCR 等价对候选(自动学习只攒不生效)
         installCrashCleanup()
         addOverlay()
         val filter = IntentFilter().apply {
@@ -252,6 +253,7 @@ class DumpAccessibilityService : AccessibilityService() {
         setOverlayVisible(true)
         updateAutoButton()
         clearDumps()   // 不管是手动停止还是达到目标组数自动停止，都顺手清掉本次运行的调试临时文件
+        OcrLearn.save()   // 落盘本次攒到的 OCR 等价对候选
         Log.i(TAG, "STOP: $reason (groups=$groupsDone answered=$answered)")
         val summary = "$reason（完成 $groupsDone 组，答 $answered 题）"
         toast("已停止：$summary")

@@ -117,7 +117,11 @@ class AnswerStore(private val context: Context) {
             val sim = similarity(norm, k)
             if (sim > bestSim) { bestSim = sim; best = k }
         }
-        if (best != null && bestSim >= simThreshold) return best
+        if (best != null && bestSim >= simThreshold) {
+            // 两段被判同一题、文字略有差异 → 喂给 OcrLearn 攒"等价对"候选(只攒不生效)。
+            if (best != norm) OcrLearn.observe(norm, best)
+            return best
+        }
         if (addIfNew) seenKeys.add(norm)
         return norm
     }

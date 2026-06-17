@@ -73,6 +73,35 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:text="OCR 等价对候选（待确认）"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:paddingBottom="4dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="程序攒到的“老是被认混的两个字”。确认后会当成等价写法、提高识别一致性；不确定就忽略。"
+            android:textSize="12sp"
+            android:paddingBottom="8dp" />
+
+        <LinearLayout
+            android:id="@+id/learnContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingBottom="8dp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="24dp"
+            android:layout_marginBottom="16dp"
+            android:background="#33000000" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
             android:text="题库管理"
             android:textSize="18sp"
             android:textStyle="bold"

@@ -27,6 +27,7 @@ class MainActivity : Activity() {
     private lateinit var storageInfo: TextView
     private lateinit var banksContainer: LinearLayout
     private lateinit var settingsContainer: LinearLayout
+    private lateinit var learnContainer: LinearLayout
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -36,6 +37,8 @@ class MainActivity : Activity() {
         storageInfo = findViewById(R.id.storageInfo)
         banksContainer = findViewById(R.id.banksContainer)
         settingsContainer = findViewById(R.id.settingsContainer)
+        learnContainer = findViewById(R.id.learnContainer)
+        OcrLearn.init(this)
 
         findViewById<Button>(R.id.openAccessibilityButton).setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -117,6 +120,41 @@ class MainActivity : Activity() {
         super.onResume()
         refreshStatus()
         refreshBanks()
+        refreshLearn()
+    }
+
+    /** OCR 等价对候选：列出达标的"老被认混的两个字"，确认→入 ocrfix_user.json，忽略→清掉。 */
+    private fun refreshLearn() {
+        learnContainer.removeAllViews()
+        val cands = OcrLearn.qualifying()
+        if (cands.isEmpty()) {
+            learnContainer.addView(TextView(this).apply {
+                text = "（暂无达标候选。攒够 ${OcrLearn.MIN_TOTAL} 次、且足够稳定才会出现在这里。）"
+                textSize = 13f
+            })
+            return
+        }
+        for ((x, y, n) in cands) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 8, 0, 8)
+            }
+            row.addView(TextView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                textSize = 15f
+                text = "「$x」=「$y」　·　$n 次"
+            })
+            row.addView(Button(this).apply {
+                text = "确认等价"
+                setOnClickListener { OcrLearn.confirm(x, y); refreshLearn() }
+            })
+            row.addView(Button(this).apply {
+                text = "忽略"
+                setOnClickListener { OcrLearn.dismiss(x, y); refreshLearn() }
+            })
+            learnContainer.addView(row)
+        }
     }
 
     private fun refreshStatus() {
