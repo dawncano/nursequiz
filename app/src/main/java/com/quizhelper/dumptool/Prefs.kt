@@ -43,4 +43,7 @@ object Prefs {
 
     fun unknownLimit(c: Context): Int = sp(c).getInt(KEY_UNKNOWN, DEF_UNKNOWN).coerceIn(1, 50)
     fun setUnknownLimit(c: Context, v: Int) = sp(c).edit().putInt(KEY_UNKNOWN, v.coerceIn(1, 50)).apply()
+
+    /** 清空所有设置(恢复默认)。配合 AnswerStore.wipeAllData 用。 */
+    fun clearAll(c: Context) = sp(c).edit().clear().apply()
 }

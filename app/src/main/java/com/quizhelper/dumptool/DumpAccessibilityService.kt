@@ -152,12 +152,10 @@ class DumpAccessibilityService : AccessibilityService() {
         windowManager = wm
         val container = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
 
+        // 悬浮条只留"开始/停止"。OCR/节点 是调试导出，对用户没意义，从界面去掉；
+        // 仍可用 adb 广播(OCR/NODES/STEP)触发，方便排查。
         autoButton = makeButton("▶ 开始") { toggleAuto() }
-        val ocrBtn = makeButton("OCR") { ocrDump() }
-        val nodeBtn = makeButton("节点") { nodeDump() }
         container.addView(autoButton)
-        container.addView(ocrBtn)
-        container.addView(nodeBtn)
         overlay = container
 
         val params = WindowManager.LayoutParams(

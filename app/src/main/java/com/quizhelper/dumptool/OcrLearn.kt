@@ -86,6 +86,11 @@ object OcrLearn {
         save()
     }
 
+    /** 清空内存里的候选(配合 AnswerStore.wipeAllData；候选文件已被整目录删除)。 */
+    fun clearAll() {
+        pairCount.clear()
+    }
+
     private fun pairKey(a: String, b: String): String =
         if (a <= b) "$a|$b" else "$b|$a"
 

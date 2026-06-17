@@ -238,6 +238,15 @@ class AnswerStore(private val context: Context) {
             File(context.getExternalFilesDir(null), "dumps").listFiles()?.forEach { it.delete() }
         }
 
+        /** 清空本 App 的全部数据：题库、临时文件、OCR学得表/候选、所有设置。
+         *  给"卸载前手动清干净 / 想从零开始"用——Android/data/<pkg> 下整个清掉 + 重置内存单例。 */
+        fun wipeAllData(context: Context) {
+            runCatching { context.getExternalFilesDir(null)?.deleteRecursively() }
+            Prefs.clearAll(context)
+            OcrLearn.clearAll()
+            OcrFix.load(context)   // 重载(用户表已删，只剩内置)
+        }
+
         // --- 题库条目的查看/修正(供 MainActivity 6.8 用)。直接读写题库 JSON，
         //     不经过运行期实例。改动在下次 setBank 加载该库时生效。---
 

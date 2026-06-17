@@ -115,11 +115,24 @@
             android:paddingBottom="8dp"
             android:text="" />
 
-        <Button
-            android:id="@+id/clearTempButton"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="清理临时文件" />
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/clearTempButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="清理临时文件" />
+
+            <Button
+                android:id="@+id/wipeAllButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:text="清空所有数据" />
+        </LinearLayout>
 
         <LinearLayout
             android:id="@+id/banksContainer"

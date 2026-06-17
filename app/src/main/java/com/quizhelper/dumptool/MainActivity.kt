@@ -47,6 +47,7 @@ class MainActivity : Activity() {
             AnswerStore.clearTemp(this)
             refreshBanks()
         }
+        findViewById<Button>(R.id.wipeAllButton).setOnClickListener { confirmWipeAll() }
         buildSettings()
         requestNotifyPermissionIfNeeded()
     }
@@ -270,6 +271,18 @@ class MainActivity : Activity() {
             })
             container.addView(item)
         }
+    }
+
+    private fun confirmWipeAll() {
+        AlertDialog.Builder(this)
+            .setTitle("清空所有数据")
+            .setMessage("会删除：全部题库答案、临时文件、OCR 学得表/候选、所有设置（恢复默认）。不可恢复，确定？")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("全部清空") { _, _ ->
+                AnswerStore.wipeAllData(this)
+                refreshStatus(); refreshBanks(); refreshLearn(); buildSettings()
+            }
+            .show()
     }
 
     private fun confirmDelete(b: BankInfo) {

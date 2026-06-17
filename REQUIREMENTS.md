@@ -73,6 +73,8 @@
       - 以上都不依赖 `MainActivity` 那个手动"清理临时文件"按钮（它只是额外的兜底入口）
    - **dev机器上的** `logcat_latest.txt` 是调试时手动重定向出来的，不在 App 关心范围内，已加进 `.gitignore`。
    - 后续若新增任何临时文件（比如第5节第2点设想的"把 UNKNOWN 画面存一份方便适配"），必须写进 `dumps/`（或同样纳入 `clearTemp` 范围），保持"临时文件只此一处、统一回收"。
+   - **卸载与彻底清空**：所有数据都在 App 私有目录(外部 `getExternalFilesDir`/内部 SharedPreferences)，**正常卸载 App 系统会自动全部删除**；之所以可能看到"卸载后还在"，多半是 `adb install -r`/Studio 重装(保留数据，不是卸载)或云备份还原。已把 `android:allowBackup` 设为 **false**(禁止备份还原)，并在 `MainActivity` 加 **"清空所有数据"** 按钮(确认后删题库/临时/OCR学得表/候选 + 重置所有设置)，想从零开始或卸载前清干净都可手动一键清。
+   - **悬浮条**只保留"▶开始/■停止"。OCR/节点 调试导出按钮已从界面去掉(对用户无意义)，仍可用 `adb broadcast`(OCR/NODES/STEP)触发，方便排查。
 
 ### 3.4 运行流程——一个 step 的完整生命周期
 
