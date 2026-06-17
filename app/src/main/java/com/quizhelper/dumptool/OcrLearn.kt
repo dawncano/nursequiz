@@ -19,8 +19,14 @@ object OcrLearn {
     const val MIN_TOTAL = 30        // 一条候选对至少被观察到这么多次
     const val MIN_DOMINANCE = 0.97  // 且占 X 或 Y 各自全部混淆的比例都要这么高(说明是干净的成对混淆)
 
+    /** 一条可展示的候选：rep=更可能对的字(代表/放前面)，other=另一种写法，count=次数，
+     *  example=一句实际出现过这俩字混淆的上下文，让用户看明白在替换什么。 */
+    data class Candidate(val rep: String, val other: String, val count: Int, val example: String)
+
     // 候选对(无向，key="较小字|较大字") -> 被混淆计数
     private val pairCount = HashMap<String, Int>()
+    // 候选对 -> 一段实际出现过的上下文例句(给用户看懂在替换什么)
+    private val pairExample = HashMap<String, String>()
     // 每个字在所有题干里出现的总次数 -> 用来定"哪个更可能是对的"：正确字在每次正确识别里
     // 都出现(频率高)，错字只在偶尔误识别里出现(频率低)，所以频率高的优先当代表。
     private val charFreq = HashMap<String, Int>()
@@ -48,13 +54,17 @@ object OcrLearn {
             if (a[i] != b[i]) {
                 val key = pairKey(a[i].toString(), b[i].toString())
                 pairCount[key] = (pairCount[key] ?: 0) + 1
+                // 存一段上下文例句(取 a 在该字位附近的窗口)，凑够一定长度就不再换。
+                if ((pairExample[key]?.length ?: 0) < 10) {
+                    pairExample[key] = a.substring(maxOf(0, i - 6), minOf(a.length, i + 7))
+                }
             }
         }
         if (++dirty >= 20) save()
     }
 
-    /** 达标、可展示给用户确认的候选：返回 (字X, 字Y, 次数)，按次数降序。 */
-    fun qualifying(): List<Triple<String, String, Int>> {
+    /** 达标、可展示给用户确认的候选(含上下文例句)，按次数降序。 */
+    fun qualifying(): List<Candidate> {
         // 每个字"参与混淆"的总次数 = 含它的所有对的计数之和
         val memberTotal = HashMap<String, Int>()
         for ((k, c) in pairCount) {
@@ -62,7 +72,7 @@ object OcrLearn {
             memberTotal[x] = (memberTotal[x] ?: 0) + c
             memberTotal[y] = (memberTotal[y] ?: 0) + c
         }
-        val out = ArrayList<Triple<String, String, Int>>()
+        val out = ArrayList<Candidate>()
         for ((k, c) in pairCount) {
             if (c < MIN_TOTAL) continue
             val (a, b) = k.split("|")
@@ -70,10 +80,10 @@ object OcrLearn {
             if (denom > 0 && c.toDouble() / denom >= MIN_DOMINANCE) {
                 // 字频高的当代表(更可能是对的)放前面，确认入表时它就是规范写法。
                 val (x, y) = if ((charFreq[a] ?: 0) >= (charFreq[b] ?: 0)) a to b else b to a
-                out.add(Triple(x, y, c))
+                out.add(Candidate(x, y, c, pairExample[k] ?: ""))
             }
         }
-        return out.sortedByDescending { it.third }
+        return out.sortedByDescending { it.count }
     }
 
     /** 用户确认某候选：把 [x,y] 作为等价组追加进 ocrfix_user.json，并从候选里清掉。 */
@@ -102,6 +112,7 @@ object OcrLearn {
     fun clearAll() {
         pairCount.clear()
         charFreq.clear()
+        pairExample.clear()
     }
 
     private fun pairKey(a: String, b: String): String =
@@ -115,6 +126,7 @@ object OcrLearn {
             val root = JSONObject(f.readText())
             root.optJSONObject("pairs")?.let { o -> for (k in o.keys()) pairCount[k] = o.getInt(k) }
             root.optJSONObject("freq")?.let { o -> for (k in o.keys()) charFreq[k] = o.getInt(k) }
+            root.optJSONObject("examples")?.let { o -> for (k in o.keys()) pairExample[k] = o.getString(k) }
         }.onFailure { Log.e(TAG, "OcrLearn load failed", it) }
     }
 
@@ -129,8 +141,10 @@ object OcrLearn {
             for (k in pairCount.keys) k.split("|").forEach { needed.add(it) }
             val freq = JSONObject()
             for (k in needed) charFreq[k]?.let { freq.put(k, it) }
+            val examples = JSONObject()
+            for ((k, v) in pairExample) if (pairCount.containsKey(k)) examples.put(k, v)
             val f = File(ctx.getExternalFilesDir(null), FILE)
-            f.writeText(JSONObject().put("pairs", pairs).put("freq", freq).toString())
+            f.writeText(JSONObject().put("pairs", pairs).put("freq", freq).put("examples", examples).toString())
         }.onFailure { Log.e(TAG, "OcrLearn save failed", it) }
     }
 }

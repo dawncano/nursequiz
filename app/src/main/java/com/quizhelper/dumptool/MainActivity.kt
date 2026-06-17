@@ -136,26 +136,36 @@ class MainActivity : Activity() {
             })
             return
         }
-        for ((x, y, n) in cands) {
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, 8, 0, 8)
+        for (c in cands) {
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, 10, 0, 10)
             }
-            row.addView(TextView(this).apply {
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            // 上下文例句：把例句里的"对/错"两个字都高亮出来，用户一看就懂在替换什么。
+            if (c.example.isNotEmpty()) {
+                item.addView(TextView(this).apply {
+                    textSize = 13f
+                    text = "例：…${c.example}…"
+                })
+            }
+            item.addView(TextView(this).apply {
                 textSize = 15f
-                text = "「$x」=「$y」　·　$n 次"
+                text = "把「${c.other}」当成「${c.rep}」（更可能对的是「${c.rep}」）　·　${c.count} 次"
             })
-            row.addView(Button(this).apply {
+            val btns = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, 4, 0, 0)
+            }
+            btns.addView(Button(this).apply {
                 text = "确认等价"
-                setOnClickListener { OcrLearn.confirm(x, y); refreshLearn() }
+                setOnClickListener { OcrLearn.confirm(c.rep, c.other); refreshLearn() }
             })
-            row.addView(Button(this).apply {
+            btns.addView(Button(this).apply {
                 text = "忽略"
-                setOnClickListener { OcrLearn.dismiss(x, y); refreshLearn() }
+                setOnClickListener { OcrLearn.dismiss(c.rep, c.other); refreshLearn() }
             })
-            learnContainer.addView(row)
+            item.addView(btns)
+            learnContainer.addView(item)
         }
     }
 
