@@ -411,14 +411,19 @@ class DumpAccessibilityService : AccessibilityService() {
         }
     }
 
-    /** 依次点击多个坐标（多选题用），点完回调。 */
+    /** 依次点击多个坐标（多选题用），点完回调。
+     *  点击间隔/选完到点确定的等待都按当前速度(stepInterval)成比例缩放——
+     *  这样"速度"一个设置就能整体压到最快，又各留安全下限。 */
     private fun tapSequence(points: List<XY>, done: () -> Unit) {
-        if (points.isEmpty()) { mainHandler.postDelayed(done, 300); return }
+        val iv = Prefs.stepIntervalMs(this)
+        val gap = (iv / 3).coerceIn(110L, 350L)      // 多选连续点击之间
+        val settle = (iv / 2).coerceIn(140L, 450L)   // 选完到点"确定"之间(等"确定"变可点)
+        if (points.isEmpty()) { mainHandler.postDelayed(done, settle); return }
         var i = 0
         fun next() {
-            if (i >= points.size) { mainHandler.postDelayed(done, 400); return }
+            if (i >= points.size) { mainHandler.postDelayed(done, settle); return }
             tap(points[i]); i++
-            mainHandler.postDelayed({ next() }, 350)
+            mainHandler.postDelayed({ next() }, gap)
         }
         next()
     }
@@ -462,6 +467,8 @@ class DumpAccessibilityService : AccessibilityService() {
     // 否则点击会落到悬浮条上。
     private fun captureAndParse(onModel: (ScreenModel?) -> Unit) {
         setOverlayVisible(false)
+        // 隐藏悬浮条到截图之间的等待，也随速度缩放(留 60ms 下限让它真消失)。
+        val preCapture = (Prefs.stepIntervalMs(this) / 8).coerceIn(60L, 150L)
         mainHandler.postDelayed({
             captureScreen { bmp ->
                 if (bmp == null) { onModel(null); return@captureScreen }
@@ -471,7 +478,7 @@ class DumpAccessibilityService : AccessibilityService() {
                     onModel(model)
                 }
             }
-        }, 120)
+        }, preCapture)
     }
 
     /** 一步点击全部完成后调用：恢复悬浮条 + 安排下一步。 */
