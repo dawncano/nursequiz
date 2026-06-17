@@ -292,10 +292,13 @@ class DumpAccessibilityService : AccessibilityService() {
                 lastQuestionText = m.questionText   // 保存题干，供 FEEDBACK 存答案用
                 val brute = Prefs.bruteMode(this)
                 val key = store.keyFor(m.questionText)
-                // 暴力模式：完全不查表，每题都走 blindRound 盲选(但 FEEDBACK 仍照常建库)。
-                // 智能模式：先查表；若存档答案连续判错够次数(distrusted)则不信任、退回盲选。
+                // 暴力模式：单选题纯盲选不查表(刷分快)；但**多选题破例查表**——多选答案是多个
+                // 字母，单字母盲选永远凑不出来，不查表会一直错、卡死那一组。配合 FEEDBACK 照常
+                // 建库：第1轮盲选错→学到完整答案(如ABD)→第2轮查表命中。
+                // 智能模式：都查表；若存档答案连续判错够次数(distrusted)则不信任、退回盲选。
                 val distrusted = key != null && failCount.getOrDefault(key, 0) >= failLimit
-                val known = if (brute || distrusted) null else store.get(m.questionText)
+                val skipBank = distrusted || (brute && !m.isMulti)
+                val known = if (skipBank) null else store.get(m.questionText)
                 val idxs = if (known != null) {
                     lettersToIdx(known)
                 } else {
