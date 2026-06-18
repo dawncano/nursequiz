@@ -56,12 +56,16 @@ class DumpAccessibilityService : AccessibilityService() {
     private var overlay: LinearLayout? = null
     private var overlayParams: WindowManager.LayoutParams? = null
     private var autoButton: Button? = null
+    private var pauseButton: Button? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private lateinit var store: AnswerStore
 
     // 自动答题状态
     @Volatile private var auto = false
+    // 暂停：与 auto 正交。auto 仍为 true(不触发 startAuto 的计数重置)，只是循环不排下一个 step；
+    // 点"继续"原地接着跑，groupsDone/blindRound/failCount 等全部保留。
+    @Volatile private var paused = false
     private var targetGroups = Prefs.DEF_TARGET   // 目标组数，startAuto 时从 Prefs 读
     private var groupsDone = 0
     private var answered = 0
@@ -157,7 +161,9 @@ class DumpAccessibilityService : AccessibilityService() {
         // 悬浮条只留"开始/停止"。OCR/节点 是调试导出，对用户没意义，从界面去掉；
         // 仍可用 adb 广播(OCR/NODES/STEP)触发，方便排查。
         autoButton = makeButton("▶ 开始") { toggleAuto() }
+        pauseButton = makeButton("‖ 暂停") { togglePause() }
         container.addView(autoButton)
+        container.addView(pauseButton)
         overlay = container
 
         // 默认位置：屏幕高度 15% 处偏右下角（百分比，适配不同分辨率）。
@@ -228,6 +234,11 @@ class DumpAccessibilityService : AccessibilityService() {
                 it.setBackgroundColor(if (auto) colorRun else colorIdle)
                 it.text = if (auto) "■ 停($groupsDone/$targetGroups)" else "▶ 开始"
             }
+            pauseButton?.let {
+                it.text = if (paused) "▶ 继续" else "‖ 暂停"
+                it.setBackgroundColor(if (paused) colorRun else colorIdle)
+                it.alpha = if (auto) 0.9f else 0.4f   // 没运行时灰掉，提示暂停只在运行中可用
+            }
         }
     }
 
@@ -237,9 +248,26 @@ class DumpAccessibilityService : AccessibilityService() {
 
     private fun toggleAuto() { if (auto) stopAuto("手动停止") else startAuto() }
 
+    /** 暂停/继续。暂停≠停止：auto 不变(计数全部保留)，只让循环停在原地；继续就接着跑。 */
+    private fun togglePause() {
+        if (!auto) { toast("未在运行，无需暂停"); return }
+        paused = !paused
+        updateAutoButton()
+        if (paused) {
+            setOverlayVisible(true)   // 暂停时露出悬浮条，方便点"继续"，也不挡屏幕
+            toast("已暂停（进度保留，点继续接着跑）")
+            Log.i(TAG, "PAUSE at groups=$groupsDone answered=$answered blindRound=$blindRound")
+        } else {
+            toast("继续")
+            Log.i(TAG, "RESUME")
+            scheduleStep()
+        }
+    }
+
     private fun startAuto() {
         if (auto) return
         auto = true
+        paused = false
         targetGroups = Prefs.targetGroups(this)   // 本次运行的目标组数，取设置页的值
         groupsDone = 0
         answered = 0
@@ -261,6 +289,7 @@ class DumpAccessibilityService : AccessibilityService() {
     private fun stopAuto(reason: String) {
         if (!auto) return
         auto = false
+        paused = false
         setOverlayVisible(true)
         updateAutoButton()
         clearDumps()   // 不管是手动停止还是达到目标组数自动停止，都顺手清掉本次运行的调试临时文件
@@ -293,13 +322,13 @@ class DumpAccessibilityService : AccessibilityService() {
     }
 
     private fun scheduleStep() {
-        if (!auto) return
+        if (!auto || paused) return
         // 每次都从 Prefs 读，运行期在设置页改了 step 间隔下一拍就生效。
         mainHandler.postDelayed({ loopStep() }, Prefs.stepIntervalMs(this))
     }
 
     private fun loopStep() {
-        if (!auto) return
+        if (!auto || paused) return
         captureAndParse { model ->
             if (model == null) { finishStep(); return@captureAndParse }
             act(model)
