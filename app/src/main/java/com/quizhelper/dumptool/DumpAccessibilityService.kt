@@ -476,7 +476,7 @@ class DumpAccessibilityService : AccessibilityService() {
                 if (bmp == null) { saveToFile("step", "<no bitmap>"); return@captureScreen }
                 OcrEngine.recognize(bmp) { text ->
                     val lines = if (text != null) toLines(text) else emptyList()
-                    val model = ScreenParser.parse(lines)
+                    val model = ScreenParser.parse(lines, bmp.width, bmp.height)
                     val sb = StringBuilder("==== STEP ").append(humanTime()).append(" ====\n")
                     sb.append(model.describe()).append("\n--- RAW OCR (").append(lines.size).append(" lines) ---\n")
                     for (l in lines) sb.append(l.box.toShortString()).append(" \"").append(l.text).append("\"\n")
@@ -503,7 +503,7 @@ class DumpAccessibilityService : AccessibilityService() {
             captureScreen { bmp ->
                 if (bmp == null) { onModel(null); return@captureScreen }
                 OcrEngine.recognize(bmp) { text ->
-                    val model = if (text == null) null else ScreenParser.parse(toLines(text))
+                    val model = if (text == null) null else ScreenParser.parse(toLines(text), bmp.width, bmp.height)
                     bmp.recycle()   // OCR 完即弃，高频循环下别留给 GC——每张 ~10MB
                     onModel(model)
                 }

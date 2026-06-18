@@ -41,13 +41,28 @@ data class ScreenModel(
 
 object ScreenParser {
 
+    // 全部阈值原先按 1080×2400 物理像素写死(测试机 FHD+ 截图就是这个尺寸)。换分辨率手机
+    // (如小米17 截图 1220×2656)绝对值就对不上——元素落在阈值外被误判 UNKNOWN，5选项题尤甚。
+    // 现改为【相对定位】：① 屏幕地理类阈值(状态栏/表头带/左右半边)按当前截图宽高取比率；
+    // ② 内容驱动类(确定/下一题的位置由上方选项多少决定)锚到真实地标——选项块下方、底部
+    // 导航栏(上一题|纠错上报|下一题)上方。地标每帧 OCR 都在、随分辨率一起浮动，彻底脱离写死像素。
+    private const val BASE_W = 1080.0
+    private const val BASE_H = 2400.0
+
     private fun Rect.cx() = (left + right) / 2
     private fun Rect.cy() = (top + bottom) / 2
 
-    fun parse(raw: List<OcrLine>): ScreenModel {
-        // 上限放到 2395：要保留任务详情页底部的"开始答题/错题集"按钮(top~2298)。
-        // 底部导航栏(下一题等)由各处的 cy 约束(<2000/<2150)单独排除。
-        val lines = raw.filter { it.box.top in 120..2395 && it.text.isNotBlank() }
+    fun parse(raw: List<OcrLine>, screenW: Int = 1080, screenH: Int = 2400): ScreenModel {
+        val W = screenW; val H = screenH
+        // 比率换算：rx/ry 把"基准1080×2400下的像素"映射到当前截图尺寸。
+        fun rx(r: Double) = (W * r).toInt()
+        fun ry(r: Double) = (H * r).toInt()
+        // 像素距离类常量(行距/补偿)按高度密度因子缩放。
+        val f = H / BASE_H
+
+        // 状态栏(顶)按比率裁掉；底部不再硬裁(原 2395 在高分屏会砍掉导航栏+确定)，保留到近底，
+        // 让底部导航栏地标可见。导航栏自身由后续 cy 约束单独排除，不靠这个总过滤。
+        val lines = raw.filter { it.box.top in ry(0.05)..ry(0.998) && it.text.isNotBlank() }
             .sortedBy { it.box.cy() }
 
         // 1) 提交弹窗
@@ -71,7 +86,7 @@ object ScreenParser {
         if (isTaskDetail) {
             // "开始答题"按钮：优先文字匹配；读不到则按"错题集"(底部左)的右侧推算(底部右那个按钮)。
             val startText = lines.firstOrNull { strip(it.text).contains("开始答题") }
-                ?: lines.firstOrNull { it.box.cy() > 2150 && it.box.cx() > 360 && strip(it.text).contains("答题") }
+                ?: lines.firstOrNull { it.box.cy() > ry(0.896) && it.box.cx() > rx(0.333) && strip(it.text).contains("答题") }
             val startBtn = startText?.let { XY(it.box.cx(), it.box.cy()) }
                 ?: lines.firstOrNull { it.text.contains("错题集") }
                     ?.let { XY(it.box.right + it.box.width() * 3, it.box.cy()) }
@@ -80,9 +95,9 @@ object ScreenParser {
             val project = projLine?.text
                 ?.substringAfter("项目")?.trimStart(':', '：', ' ')?.trim()
                 ?: ""
-            val projTop = projLine?.box?.top ?: 600
+            val projTop = projLine?.box?.top ?: ry(0.25)
             val title = lines.filter {
-                it.box.top in 181 until projTop && it.box.left > 180 && !it.text.contains("任务详情")
+                it.box.top in ry(0.075) until projTop && it.box.left > rx(0.167) && !it.text.contains("任务详情")
             }.joinToString("") { it.text }.replace("进行中", "").trim()
             return ScreenModel(
                 ScreenKind.TASK_DETAIL,
@@ -97,20 +112,39 @@ object ScreenParser {
 
         // "正确答案"行：容忍 OCR 把"答"认错(苔案等)，用 含"正确"且含"案"。
         val ansLine = lines.firstOrNull { it.text.contains("正确") && it.text.contains("案") }
-        val confirmLine = lines.firstOrNull { strip(it.text).contains("确定") && it.box.cy() < 2000 }
-        // 反馈页动作按钮(下一题/提交)：OCR 常把"一"认成"ー"导致"下ー题"匹配失败，
-        // 改用【位置】定位——反馈区右侧(cx>430)、选项下方导航栏上方(cy 1300~2150)、文字含 题/交。
+
+        // 【底部导航栏地标】上一题|纠错上报|下一题。"纠错"只在导航栏出现，是最稳的底部锚点。
+        // 限定在下半屏(>0.55H)避免误匹配。确定/下一题都夹在"选项块"和这个地标之间。
+        val navLine = lines.lastOrNull {
+            val t = strip(it.text)
+            (t.contains("纠错") || t.contains("上一题")) && it.box.cy() > ry(0.55)
+        }
+        val navTop = navLine?.box?.top
+
+        // 【确定】=含"确定"、在导航栏地标【上方】(地标缺失则退回比率 0.95H 兜底)、且不在顶部表头区。
+        //   原先 cy<2000 是写死上限，5选项题把确定推过 2000 就找不到→UNKNOWN。改成相对导航栏后，
+        //   不管几个选项把确定推多低，只要它还在导航栏上面就能稳定命中。
+        val confirmUpper = navTop ?: ry(0.95)
+        val confirmLine = lines.firstOrNull {
+            strip(it.text).contains("确定") && it.box.top < confirmUpper && it.box.cy() > ry(0.30)
+        }
+
+        // 【反馈页动作按钮(下一题/提交)】OCR 常把"一"认成"ー"，改用【位置】定位：右半边(cx>0.40W)、
+        //   在"正确答案"行/选项块下方、导航栏地标上方、文字含 题/交。导航栏自己的"下一题"因 cy≥navTop
+        //   被上界排除，不会误命中。
+        val actUpper = navTop ?: ry(0.93)
+        val actLower = ansLine?.box?.bottom ?: ry(0.45)
         val nextLine = lines.firstOrNull {
-            it.box.cx() > 430 && it.box.cy() in 1300..2150 &&
+            it.box.cx() > rx(0.40) && it.box.top < actUpper && it.box.cy() > actLower &&
                 run { val t = strip(it.text); t.contains("题") || t.contains("交") }
         }
         // 动作按钮是"提交"(本轮最后一题)还是"下一题"：含"提/交"=提交，含"题"=下一题。
         // "下一题"不含提/交，"提交"不含题，OCR 噪声下也基本能分。这是盲选字母换轮的边界信号。
         val isSubmit = nextLine?.let { val t = strip(it.text); t.contains("提") || t.contains("交") } ?: false
 
-        // 选项行存在即可作为 QUESTION 的兜底信号（小屏幕+5选项时"确定"可能被挤出截图）
-        val optLetter0 = Regex("^[A-E]([ .、，|]|$)")
-        val hasOptions = lines.any { optLetter0.containsMatchIn(it.text.trim()) }
+        // 选项行存在即可作为 QUESTION 的兜底信号（确定那行偶尔被 OCR 漏读时仍能判定）。
+        val optLetter = Regex("^[A-E]([ .、，|]|$)")
+        val hasOptions = lines.any { optLetter.containsMatchIn(it.text.trim()) }
 
         // 有"正确答案" => 反馈页；有"确定"或检测到选项行 => 答题页；都没有 => 未知
         val kind = when {
@@ -133,49 +167,52 @@ object ScreenParser {
         // 题干起点：顶部区域里"以题号数字开头 或 含题型字样"的行的底边。
         // 这样即使"单选题"被 OCR 认错(半选题/里还题…)，也能靠题号 N. 把表头排除掉。
         val headerBottom = lines
-            .filter { it.box.cy() in 200..410 }
+            .filter { it.box.cy() in ry(0.083)..ry(0.171) }
             .filter { l ->
                 val t = l.text.trim()
                 t.firstOrNull()?.isDigit() == true ||
                     t.contains("单选") || t.contains("多选") || t.contains("选题") || t.contains("判断")
             }
             .maxOfOrNull { it.box.bottom }
-        val regionTop = headerBottom ?: typeLine?.box?.bottom ?: 280
-        val regionBottom = listOfNotNull(ansLine?.box?.top, confirmLine?.box?.top, nextLine?.box?.top)
-            .minOrNull() ?: 2000
+        val regionTop = headerBottom ?: typeLine?.box?.bottom ?: ry(0.117)
+        // 选项区下界：取"正确答案/确定/下一题/导航栏"中最靠上的那条——把确定本身挡在选项之外。
+        val regionBottom = listOfNotNull(ansLine?.box?.top, confirmLine?.box?.top, nextLine?.box?.top, navTop)
+            .minOrNull() ?: ry(0.833)
         val regionLines = lines.filter { it.box.cy() in (regionTop + 1) until regionBottom }
 
-        // 阈值50px时，选项文字换行后多出的单字行(如"血")离主行约51px，会被
-        // 误判成独立的"选项行"，把后面选项坐标全部顶歪一位。选项间真实间距≥110px，
-        // 提到65px仍有足够安全边际，同时能把换行残字并回原行。
-        val rows = clusterRows(regionLines, 65)
+        // 阈值原 65px(基准2400)：选项文字换行后多出的单字残行(~51px)会被误判成独立选项行，把后面
+        // 选项坐标全部顶歪一位；选项间真实间距≥110px，65px 仍有安全边际。按密度因子缩放保持比例。
+        val rows = clusterRows(regionLines, (65 * f).toInt())
         // 选项靠"行首是 A-E 字母(后跟空格/标点/结尾)"识别——选项前都有圈字母。
         // 这样不管题干多长(含大段病史+问句)都不会被误切。字母后紧跟中文的(如"A型血")不算。
-        val optLetter = Regex("^[A-E]([ .、，|]|$)")
         var optStart = rows.indexOfFirst { optLetter.containsMatchIn(it.text.trim()) }
         if (optStart < 0) {
             // 回退：选项字母全被 OCR 认错时，用间距法(题干内换行~60 < 选项间距~120)。
+            val gapThr = (90 * f).toInt()
             for (i in 1 until rows.size) {
-                if (rows[i].cy - rows[i - 1].cy > 90) { optStart = i; break }
+                if (rows[i].cy - rows[i - 1].cy > gapThr) { optStart = i; break }
             }
         }
         val optRows = if (optStart < 0) emptyList() else rows.subList(optStart, rows.size)
 
         // 题干文字【按阅读顺序(先上下后左右)直接从原始行拼】，绕开 clusterRows——
-        // 它的 65px 合并会把长题干临界行距(~60px)的换行并进同一簇、又只按左右(x)拼接，
-        // 把上下两行横着串起来打乱(同一题每轮文字都不同、污染题库key，真机已复现)。
-        // 选项行仍用 clusterRows 结果(字母识别/坐标不受影响)。top 量化到30px桶降低同行抖动。
+        // 它的合并会把长题干临界行距的换行并进同一簇、又只按左右(x)拼接，把上下两行横着串起来
+        // 打乱(同一题每轮文字都不同、污染题库key，真机已复现)。top 量化到桶降低同行抖动。
         val qBottom = optRows.firstOrNull()?.box?.top ?: Int.MAX_VALUE
+        val bucket = (30 * f).toInt().coerceAtLeast(1)
         val questionText = regionLines.filter { it.box.cy() < qBottom }
-            .sortedWith(compareBy({ it.box.top / 30 }, { it.box.left }))
+            .sortedWith(compareBy({ it.box.top / bucket }, { it.box.left }))
             .joinToString("") { it.text }.trim()
-        // 小屏幕+多选项时"确定"可能被挤出截图，用最后一个选项行的 y 往下推算兜底坐标。
-        val screenBottom = lines.maxOfOrNull { it.box.bottom } ?: 2400
-        val fallbackConfirmY = optRows.lastOrNull()?.let { it.cy + 160 }?.coerceAtMost(screenBottom - 80)
-        val confirmXY = confirmLine?.box?.let { XY(it.cx(), it.cy()) }
-            ?: fallbackConfirmY?.let { XY(540, it) }
 
-        val options = inferOptions(optRows, confirmLine?.box?.top ?: fallbackConfirmY)
+        // 确定坐标：优先用 OCR 命中的确定行；漏读时用最后一个选项行往下推算兜底(几何兜底)，
+        // x 取屏幕中央(确定按钮居中)。
+        val screenBottom = lines.maxOfOrNull { it.box.bottom } ?: H
+        val fallbackConfirmY = optRows.lastOrNull()?.let { it.cy + (160 * f).toInt() }
+            ?.coerceAtMost(screenBottom - (80 * f).toInt())
+        val confirmXY = confirmLine?.box?.let { XY(it.cx(), it.cy()) }
+            ?: fallbackConfirmY?.let { XY(W / 2, it) }
+
+        val options = inferOptions(optRows, confirmLine?.box?.top ?: fallbackConfirmY, f)
         val correct = ansLine?.let { lettersFrom(it.text) } ?: emptyList()
         val yours = ansLine?.let { yoursFrom(it.text) } ?: emptyList()
 
@@ -217,15 +254,17 @@ object ScreenParser {
 
     /** 选项点击坐标。ML Kit 偶尔漏识别某个选项(尤其最后一个 E：圈和文字都没返回)，但选项圈
      *  是等间距排列的——按行间距外推，补齐"确定"按钮之前还放得下的空槽位，用圈所在的 x 坐标兜底
-     *  点击(点击靠坐标、不需要文字)。这样 5 选项题不会被当成 4 选项、盲选也能轮到 E。 */
-    private fun inferOptions(optRows: List<Row>, confirmTop: Int?): List<XY> {
+     *  点击(点击靠坐标、不需要文字)。这样 5 选项题不会被当成 4 选项、盲选也能轮到 E。
+     *  f=密度因子，把间距过滤/圈补偿按当前分辨率缩放。 */
+    private fun inferOptions(optRows: List<Row>, confirmTop: Int?, f: Double): List<XY> {
         val detected = optRows.map { XY(it.box.cx(), it.cy) }
         if (detected.size < 2 || confirmTop == null) return detected
         val ys = optRows.map { it.cy }
-        val gaps = ys.zipWithNext { a, b -> b - a }.filter { it in 60..220 }.sorted()
+        val lo = (60 * f).toInt(); val hi = (220 * f).toInt()
+        val gaps = ys.zipWithNext { a, b -> b - a }.filter { it in lo..hi }.sorted()
         if (gaps.isEmpty()) return detected
         val spacing = gaps[gaps.size / 2]
-        val circleX = optRows.minOf { it.box.left } + 12
+        val circleX = optRows.minOf { it.box.left } + (12 * f).toInt()
         val full = ArrayList<XY>()
         var slot = ys.first()
         var guard = 0
