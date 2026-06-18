@@ -151,7 +151,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="NurseQuiz v1.0"
+            android:text="NurseQuiz v1.1"
             android:textSize="13sp"
             android:textStyle="bold"
             android:textColor="#555555" />
