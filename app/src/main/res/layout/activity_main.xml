@@ -141,6 +141,46 @@
             android:orientation="vertical"
             android:paddingTop="8dp" />
 
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="32dp"
+            android:layout_marginBottom="16dp"
+            android:background="#33000000" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="NurseQuiz v1.0"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="#555555" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="作者联系方式"
+            android:textSize="12sp"
+            android:textColor="#888888"
+            android:paddingTop="4dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Email: volcano.hi517@gmail.com"
+            android:textSize="12sp"
+            android:textColor="#888888"
+            android:paddingTop="2dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="QQ: 1220705198"
+            android:textSize="12sp"
+            android:textColor="#888888"
+            android:paddingTop="2dp"
+            android:paddingBottom="16dp" />
+
     </LinearLayout>
 
 </ScrollView>
