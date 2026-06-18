@@ -204,11 +204,10 @@ object ScreenParser {
             .sortedWith(compareBy({ it.box.top / bucket }, { it.box.left }))
             .joinToString("") { it.text }.trim()
 
-        // 确定坐标：优先用 OCR 命中的确定行；漏读时用最后一个选项行往下推算兜底(几何兜底)，
-        // x 取屏幕中央(确定按钮居中)。
-        val screenBottom = lines.maxOfOrNull { it.box.bottom } ?: H
-        val fallbackConfirmY = optRows.lastOrNull()?.let { it.cy + (160 * f).toInt() }
-            ?.coerceAtMost(screenBottom - (80 * f).toInt())
+        // 确定行偶尔被 OCR 漏读两字(按钮在屏上、只是这帧没返回该行)。用地标兜底估算：
+        // 夹在最后选项行与底部导航栏正中间，x 取屏幕中央。两地标缺一就放弃(act 会跳过本帧、下帧重试)。
+        val lastOptBottom = optRows.lastOrNull()?.box?.bottom
+        val fallbackConfirmY = if (lastOptBottom != null && navTop != null) (lastOptBottom + navTop) / 2 else null
         val confirmXY = confirmLine?.box?.let { XY(it.cx(), it.cy()) }
             ?: fallbackConfirmY?.let { XY(W / 2, it) }
 
