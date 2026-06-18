@@ -44,6 +44,11 @@ object Prefs {
     fun unknownLimit(c: Context): Int = sp(c).getInt(KEY_UNKNOWN, DEF_UNKNOWN).coerceIn(1, 50)
     fun setUnknownLimit(c: Context, v: Int) = sp(c).edit().putInt(KEY_UNKNOWN, v.coerceIn(1, 50)).apply()
 
+    // 悬浮条位置（拖动后保存，下次恢复）。Int.MIN_VALUE 表示"未设置，用默认百分比"。
+    fun overlayX(c: Context): Int = sp(c).getInt("overlay_x", Int.MIN_VALUE)
+    fun overlayY(c: Context): Int = sp(c).getInt("overlay_y", Int.MIN_VALUE)
+    fun setOverlayPos(c: Context, x: Int, y: Int) = sp(c).edit().putInt("overlay_x", x).putInt("overlay_y", y).apply()
+
     /** 清空所有设置(恢复默认)。配合 AnswerStore.wipeAllData 用。 */
     fun clearAll(c: Context) = sp(c).edit().clear().apply()
 }

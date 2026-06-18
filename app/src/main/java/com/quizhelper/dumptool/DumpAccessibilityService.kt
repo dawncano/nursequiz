@@ -160,15 +160,21 @@ class DumpAccessibilityService : AccessibilityService() {
         container.addView(autoButton)
         overlay = container
 
+        // 默认位置：屏幕高度 15% 处偏右下角（百分比，适配不同分辨率）。
+        // 若用户拖动过则恢复上次位置。
+        val screenH = wm.currentWindowMetrics.bounds.height()
+        val savedX = Prefs.overlayX(this)
+        val savedY = Prefs.overlayY(this)
+        val initX = if (savedX != Int.MIN_VALUE) savedX else 0
+        val initY = if (savedY != Int.MIN_VALUE) savedY else (screenH * 0.15f).toInt()
+
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
-        // 放到底部偏右的空白区（确定按钮下方、导航栏上方），避免压住题目/选项。
-        // 仍可拖动到任意位置。
-        ).apply { gravity = Gravity.BOTTOM or Gravity.END; x = 0; y = 160 }
+        ).apply { gravity = Gravity.BOTTOM or Gravity.END; x = initX; y = initY }
         overlayParams = params
 
         container.setOnTouchListener(object : View.OnTouchListener {
@@ -181,6 +187,9 @@ class DumpAccessibilityService : AccessibilityService() {
                         if (abs(mx) > 12 || abs(my) > 12) moved = true
                         params.x = ix + mx; params.y = iy + my
                         runCatching { wm.updateViewLayout(v, params) }
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        if (moved) Prefs.setOverlayPos(this@DumpAccessibilityService, params.x, params.y)
                     }
                 }
                 return moved
