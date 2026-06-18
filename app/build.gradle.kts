@@ -11,8 +11,13 @@ android {
         applicationId = "com.quizhelper.dumptool"
         minSdk = 30
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1"
+        // 版本号单一来源：gradle.properties 的 appVersionCode/appVersionName，发版只改那里。
+        versionCode = (project.property("appVersionCode") as String).toInt()
+        versionName = project.property("appVersionName") as String
+    }
+
+    buildFeatures {
+        buildConfig = true   // 生成 BuildConfig.VERSION_NAME 供 App 内显示版本号
     }
 
     applicationVariants.all {

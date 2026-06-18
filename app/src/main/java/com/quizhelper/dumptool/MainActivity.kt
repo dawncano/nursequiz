@@ -38,6 +38,7 @@ class MainActivity : Activity() {
         banksContainer = findViewById(R.id.banksContainer)
         settingsContainer = findViewById(R.id.settingsContainer)
         learnContainer = findViewById(R.id.learnContainer)
+        findViewById<TextView>(R.id.versionText).text = "NurseQuiz v${BuildConfig.VERSION_NAME}"
         OcrFix.load(this)
         OcrLearn.init(this)
 

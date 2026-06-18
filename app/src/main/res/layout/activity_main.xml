@@ -149,9 +149,10 @@
             android:background="#33000000" />
 
         <TextView
+            android:id="@+id/versionText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="NurseQuiz v1.1"
+            android:text="NurseQuiz"
             android:textSize="13sp"
             android:textStyle="bold"
             android:textColor="#555555" />
