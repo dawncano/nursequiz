@@ -108,10 +108,14 @@ object ScreenParser {
         // "下一题"不含提/交，"提交"不含题，OCR 噪声下也基本能分。这是盲选字母换轮的边界信号。
         val isSubmit = nextLine?.let { val t = strip(it.text); t.contains("提") || t.contains("交") } ?: false
 
-        // 有"正确答案" => 反馈页；有"确定" => 答题页；都没有 => 未知
+        // 选项行存在即可作为 QUESTION 的兜底信号（小屏幕+5选项时"确定"可能被挤出截图）
+        val optLetter0 = Regex("^[A-E]([ .、，|]|$)")
+        val hasOptions = lines.any { optLetter0.containsMatchIn(it.text.trim()) }
+
+        // 有"正确答案" => 反馈页；有"确定"或检测到选项行 => 答题页；都没有 => 未知
         val kind = when {
             ansLine != null -> ScreenKind.FEEDBACK
-            confirmLine != null -> ScreenKind.QUESTION
+            confirmLine != null || hasOptions -> ScreenKind.QUESTION
             else -> {
                 // 未知画面：尽力找一个可关闭的按钮(确定/关闭/我知道了/取消)供自救点掉。
                 val dismiss = lines.firstOrNull {
@@ -165,7 +169,13 @@ object ScreenParser {
         val questionText = regionLines.filter { it.box.cy() < qBottom }
             .sortedWith(compareBy({ it.box.top / 30 }, { it.box.left }))
             .joinToString("") { it.text }.trim()
-        val options = inferOptions(optRows, confirmLine?.box?.top)
+        // 小屏幕+多选项时"确定"可能被挤出截图，用最后一个选项行的 y 往下推算兜底坐标。
+        val screenBottom = lines.maxOfOrNull { it.box.bottom } ?: 2400
+        val fallbackConfirmY = optRows.lastOrNull()?.let { it.cy + 160 }?.coerceAtMost(screenBottom - 80)
+        val confirmXY = confirmLine?.box?.let { XY(it.cx(), it.cy()) }
+            ?: fallbackConfirmY?.let { XY(540, it) }
+
+        val options = inferOptions(optRows, confirmLine?.box?.top ?: fallbackConfirmY)
         val correct = ansLine?.let { lettersFrom(it.text) } ?: emptyList()
         val yours = ansLine?.let { yoursFrom(it.text) } ?: emptyList()
 
@@ -174,7 +184,7 @@ object ScreenParser {
             questionText = questionText,
             isMulti = isMulti,
             options = options,
-            confirm = confirmLine?.box?.let { XY(it.cx(), it.cy()) },
+            confirm = confirmXY,
             nextBtn = nextLine?.box?.let { XY(it.cx(), it.cy()) },
             isSubmit = isSubmit,
             correctIdx = correct,
