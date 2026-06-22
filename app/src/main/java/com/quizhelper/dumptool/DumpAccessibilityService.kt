@@ -13,22 +13,12 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.Path
-import android.graphics.PixelFormat
 import android.graphics.Rect
-import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.Display
-import android.view.Gravity
-import android.view.MotionEvent
-import android.view.View
-import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
-import android.widget.Button
-import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.google.mlkit.vision.text.Text
@@ -36,37 +26,28 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.abs
 
 /**
- * 自动答题服务（截图 + OCR + 坐标点击）。
- *  - 悬浮按钮：▶自动/■停止；并保留 OCR/节点 调试导出。
+ * 自动答题服务（截图 + OCR + 坐标点击）——逻辑层。
+ *  - 悬浮控制 UI 已抽到 [FloatingOverlay]；本类只负责答题循环、状态机、广播、通知。
+ *  - 实现 [OverlayHost]：把运行态/进度暴露给悬浮球，并接收其按钮动作。
  *  - adb 广播调试：
  *      am broadcast -a com.quizhelper.dumptool.START   开始自动答题
  *      am broadcast -a com.quizhelper.dumptool.STOP    停止
+ *      am broadcast -a com.quizhelper.dumptool.SHOW    重新唤出悬浮球
  *      am broadcast -a com.quizhelper.dumptool.STEP    单步：截图+解析，把模型写文件(不点击)
  *      am broadcast -a com.quizhelper.dumptool.OCR     导出原始OCR
  *      am broadcast -a com.quizhelper.dumptool.NODES   导出节点树
  */
-class DumpAccessibilityService : AccessibilityService() {
+class DumpAccessibilityService : AccessibilityService(), OverlayHost {
 
     companion object {
         private const val TAG = "DumpTool"
         @Volatile var isRunning: Boolean = false; private set
     }
 
-    private var windowManager: WindowManager? = null
-    private var overlay: FrameLayout? = null     // 悬浮窗根容器，按层级换内容(球/胶囊/完整)
-    private var overlayParams: WindowManager.LayoutParams? = null
     private val mainHandler = Handler(Looper.getMainLooper())
-
-    // 悬浮窗展开层级：球(依附) → 胶囊(显示进度) → 完整(按钮)。无操作 N 秒自动收回成球。
-    private enum class OverlayLevel { BALL, ARCH, FULL }
-    private var overlayLevel = OverlayLevel.BALL
-    private val collapseRunnable = Runnable { collapseToBall() }
-    private var ballView: TextView? = null   // 球态视图，吸边后按贴左/贴右更新 D 形朝向
-    private var closeTargetView: TextView? = null   // 拖拽时底部浮出的 ✕ 关闭靶
-    private var overClose = false                    // 当前是否悬停在 ✕ 上
+    private lateinit var overlay: FloatingOverlay
 
     private lateinit var store: AnswerStore
 
@@ -96,11 +77,6 @@ class DumpAccessibilityService : AccessibilityService() {
     private var unknownStreak = 0
     private val failLimit = 2
 
-    private val colorIdle = 0xFF3F51B5.toInt()
-    private val colorRun = 0xFF2E7D32.toInt()
-    private val colorPause = 0xFFEF6C00.toInt()
-    private val colorFail = 0xFFC62828.toInt()
-
     private val cmdReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
@@ -109,7 +85,7 @@ class DumpAccessibilityService : AccessibilityService() {
                     startAuto()
                 }
                 "com.quizhelper.dumptool.STOP" -> stopAuto("广播停止")
-                "com.quizhelper.dumptool.SHOW" -> addOverlay()   // 球被拖到✕关闭后，打开App重新唤出
+                "com.quizhelper.dumptool.SHOW" -> overlay.show()   // 球被拖到✕关闭后，打开App重新唤出
                 "com.quizhelper.dumptool.STEP" -> debugStep()
                 "com.quizhelper.dumptool.OCR" -> ocrDump()
                 "com.quizhelper.dumptool.NODES" -> nodeDump()
@@ -124,7 +100,8 @@ class DumpAccessibilityService : AccessibilityService() {
         OcrFix.load(this)   // 载入等价对照表(内置 assets + 用户 files)
         OcrLearn.init(this) // 载入 OCR 等价对候选(自动学习只攒不生效)
         installCrashCleanup()
-        addOverlay()
+        overlay = FloatingOverlay(this, this)
+        overlay.show()
         val filter = IntentFilter().apply {
             addAction("com.quizhelper.dumptool.START")
             addAction("com.quizhelper.dumptool.STOP")
@@ -147,10 +124,7 @@ class DumpAccessibilityService : AccessibilityService() {
         auto = false
         clearDumps()   // 服务被解绑/系统关闭也算"结束"，不能依赖手动点清理按钮才删临时文件
         runCatching { unregisterReceiver(cmdReceiver) }
-        cancelCollapse()
-        hideCloseTarget()
-        overlay?.let { runCatching { windowManager?.removeView(it) } }
-        overlay = null
+        if (::overlay.isInitialized) overlay.remove()
     }
 
     /** 进程意外崩溃时尽力清一次临时文件再交还给系统默认处理（不吞掉崩溃，只是顺手清理）。 */
@@ -163,297 +137,22 @@ class DumpAccessibilityService : AccessibilityService() {
     }
 
     // ---------------------------------------------------------------------
-    // 悬浮控制条
+    // OverlayHost：把运行态/进度暴露给悬浮球，并接收其按钮动作
     // ---------------------------------------------------------------------
 
-    private fun dp(v: Int): Int = (resources.displayMetrics.density * v).toInt()
-
-    /** 目标组数：运行中取本次锁定的 targetGroups，空闲时取设置页当前值。 */
-    private fun displayTarget(): Int = if (auto) targetGroups else Prefs.targetGroups(this)
-
-    /** 当前运行态对应的主题色：空闲蓝 / 运行绿 / 暂停橙。 */
-    private fun stateColor(): Int = when { !auto -> colorIdle; paused -> colorPause; else -> colorRun }
-
-    /**
-     * 悬浮窗根容器。重写 onInterceptTouchEvent：手指移动超阈值就【从子按钮手里抢过手势】进入拖拽，
-     * 这样完整态(有按钮)也能拖；没移动才让按钮正常点击。拖完立刻收回成球(吸附)。
-     */
-    private inner class DragFrame(ctx: Context) : FrameLayout(ctx) {
-        private var ix = 0; private var iy = 0; private var downX = 0f; private var downY = 0f
-        private var moved = false
-        private val slop = dp(6)
-        private fun begin(e: MotionEvent) {
-            val p = overlayParams ?: return
-            ix = p.x; iy = p.y; downX = e.rawX; downY = e.rawY; moved = false
-            cancelCollapse()                      // 交互期间不自动收回
-        }
-        private fun beyondSlop(e: MotionEvent) = abs(e.rawX - downX) > slop || abs(e.rawY - downY) > slop
-        override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
-            when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> begin(e)
-                MotionEvent.ACTION_MOVE -> if (beyondSlop(e)) { moved = true; return true }  // 抢手势
-            }
-            return false
-        }
-        override fun onTouchEvent(e: MotionEvent): Boolean {
-            when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { begin(e); return true }
-                MotionEvent.ACTION_MOVE -> {
-                    if (!moved && beyondSlop(e)) moved = true
-                    if (moved) {
-                        val p = overlayParams ?: return true
-                        p.x = ix + (e.rawX - downX).toInt(); p.y = iy + (e.rawY - downY).toInt()
-                        runCatching { windowManager?.updateViewLayout(this, p) }
-                        showCloseTarget()                          // 拖拽中底部浮出 ✕
-                        updateCloseHover(p.x + width / 2, p.y + height / 2)
-                    }
-                    return true
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    val wasOverClose = moved && overClose
-                    hideCloseTarget()
-                    when {
-                        wasOverClose -> performClose()            // 拖进 ✕ = 停答题+藏球
-                        moved -> collapseToBall()                 // 拖完立刻吸附成球
-                        else -> { onOverlayTap(); scheduleCollapse() } // 没动=单击展开一级
-                    }
-                    return true
-                }
-            }
-            return super.onTouchEvent(e)
-        }
-    }
-
-    private fun addOverlay() {
-        if (overlay != null) return
-        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        windowManager = wm
-        val root = DragFrame(this)
-        overlay = root
-
-        val screenH = wm.currentWindowMetrics.bounds.height()
-        val savedY = Prefs.overlayY(this)
-        val initY = if (savedY != Int.MIN_VALUE) savedY else (screenH * 0.15f).toInt()
-
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply { gravity = Gravity.TOP or Gravity.LEFT; x = 0; y = initY }
-        overlayParams = params
-
-        renderLevel()
-        root.post { snapToEdge() }
-        runCatching { wm.addView(root, params) }
-            .onFailure { toast("悬浮窗添加失败：${it.message}") }
-    }
-
-    /** 拖拽时在底部中央浮出 ✕ 关闭靶（不拦截触摸，只做视觉）。 */
-    private fun showCloseTarget() {
-        if (closeTargetView != null) return
-        val wm = windowManager ?: return
-        val tv = TextView(this).apply {
-            text = "✕"; setTextColor(0xFFFFFFFF.toInt()); textSize = 26f; gravity = Gravity.CENTER
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xAA000000.toInt()) }
-            alpha = 0.85f
-        }
-        val d = dp(64)
-        val lp = WindowManager.LayoutParams(
-            d, d, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply { gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; y = dp(72) }
-        closeTargetView = tv
-        runCatching { wm.addView(tv, lp) }
-    }
-
-    private fun hideCloseTarget() {
-        closeTargetView?.let { v -> runCatching { windowManager?.removeView(v) } }
-        closeTargetView = null
-        overClose = false
-    }
-
-    /** 球中心是否压在 ✕ 靶上：压上=放大高亮，记 overClose 供松手判定。 */
-    private fun updateCloseHover(ballCx: Int, ballCy: Int) {
-        val wm = windowManager ?: return
-        val b = wm.currentWindowMetrics.bounds
-        val tx = b.width() / 2
-        val ty = b.height() - dp(72) - dp(32)   // 靶中心：底部 margin + 半径
-        val rad = dp(72)
-        val dx = ballCx - tx; val dy = ballCy - ty
-        overClose = dx * dx + dy * dy < rad * rad
-        closeTargetView?.apply {
-            val s = if (overClose) 1.3f else 1f
-            scaleX = s; scaleY = s; alpha = if (overClose) 1f else 0.85f
-        }
-    }
-
-    /** 拖进 ✕：停掉正在进行的答题并移除悬浮球（服务保留，打开App可重新唤出）。 */
-    private fun performClose() {
+    override fun overlayRunning() = auto
+    override fun overlayPaused() = paused
+    override fun overlayGroupsDone() = groupsDone
+    /** 运行中取本次锁定的 targetGroups，空闲时取设置页当前值。 */
+    override fun overlayTarget() = if (auto) targetGroups else Prefs.targetGroups(this)
+    override fun overlayStart() { startAuto() }
+    override fun overlayPause() { if (auto && !paused) togglePause() }
+    override fun overlayResume() { if (paused) togglePause() }
+    override fun overlayStop() { stopAuto("手动停止") }
+    override fun overlayClose() {
         if (auto) stopAuto("手动结束")
-        cancelCollapse()
-        overlay?.let { runCatching { windowManager?.removeView(it) } }
-        overlay = null
-        ballView = null
         toast("悬浮球已关闭，打开 App 可重新显示")
     }
-
-    private fun cancelCollapse() { mainHandler.removeCallbacks(collapseRunnable) }
-    /** 无操作 N 秒后自动收回成球。每次交互后重排。 */
-    private fun scheduleCollapse() {
-        cancelCollapse()
-        mainHandler.postDelayed(collapseRunnable, Prefs.attachDelayMs(this))
-    }
-    private fun collapseToBall() { cancelCollapse(); setLevel(OverlayLevel.BALL) }
-
-    /** 单击展开一级：球→胶囊→完整。完整态点空白不再展开。 */
-    private fun onOverlayTap() {
-        when (overlayLevel) {
-            OverlayLevel.BALL -> setLevel(OverlayLevel.ARCH)
-            OverlayLevel.ARCH -> setLevel(OverlayLevel.FULL)
-            OverlayLevel.FULL -> {}
-        }
-    }
-
-    private fun setLevel(level: OverlayLevel) {
-        overlayLevel = level
-        renderLevel()
-    }
-
-    /** 按当前层级 + 运行态重建悬浮窗内容，重建后重新吸边（宽度变了要保持贴边）。 */
-    private fun renderLevel() {
-        mainHandler.post {
-            val root = overlay ?: return@post
-            root.removeAllViews()
-            val content = when (overlayLevel) {
-                OverlayLevel.BALL -> buildBall()
-                OverlayLevel.ARCH -> buildArch()
-                OverlayLevel.FULL -> buildFull()
-            }
-            root.addView(content)
-            root.post { snapToEdge() }
-        }
-    }
-
-    private fun pillBg(color: Int) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE; cornerRadius = dp(22).toFloat(); setColor(color)
-    }
-
-    /** 半球(D形)：贴边那侧切平、朝屏内那侧半圆，看起来嵌在屏幕边缘里。随贴左/贴右切换圆弧朝向。 */
-    private fun ballShape(color: Int, isRight: Boolean): GradientDrawable {
-        val r = dp(24).toFloat()   // = 球半径，朝内侧两角圆成半圆
-        val radii = if (isRight)
-            floatArrayOf(r, r, 0f, 0f, 0f, 0f, r, r)   // 贴右：左侧圆(朝内)、右侧平(贴边)
-        else
-            floatArrayOf(0f, 0f, r, r, r, r, 0f, 0f)   // 贴左：右侧圆(朝内)、左侧平(贴边)
-        return GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadii = radii; setColor(color) }
-    }
-
-    /** 球态：依附边缘的半球，透明度高(更不挡)。图标随运行态变。 */
-    private fun buildBall(): View {
-        val glyph = when { !auto -> "▶"; paused -> "‖"; else -> "●" }
-        return TextView(this).apply {
-            text = glyph
-            setTextColor(0xFFFFFFFF.toInt())
-            textSize = 18f
-            gravity = Gravity.CENTER
-            background = ballShape(stateColor(), Prefs.overlaySideRight(this@DumpAccessibilityService))
-            alpha = 0.6f
-            val d = dp(48)
-            layoutParams = FrameLayout.LayoutParams(d, d)
-            ballView = this
-        }
-    }
-
-    /** 胶囊态：从边缘探出，显示"当前/目标"进度。 */
-    private fun buildArch(): View {
-        return TextView(this).apply {
-            text = "${groupsDone}/${displayTarget()}"
-            setTextColor(0xFFFFFFFF.toInt())
-            textSize = 16f
-            gravity = Gravity.CENTER
-            background = pillBg(stateColor())
-            alpha = 0.88f
-            setPadding(dp(18), dp(8), dp(18), dp(8))
-        }
-    }
-
-    /** 完整态：按运行态显示按钮。空闲=开始(进度)；运行=暂停|结束；暂停=继续(进度)|结束。 */
-    private fun buildFull(): View {
-        val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            background = pillBg(0xCC222222.toInt())
-            setPadding(dp(6), dp(6), dp(6), dp(6))
-            alpha = 0.95f
-        }
-        val t = displayTarget()
-        when {
-            !auto -> bar.addView(makeButton("▶ 开始 (0/$t)", colorIdle) { onStartClicked() })
-            paused -> {
-                bar.addView(makeButton("▶ 继续 ($groupsDone/$t)", colorRun) { onResumeClicked() })
-                bar.addView(makeButton("■ 结束", colorFail) { onStopClicked() })
-            }
-            else -> {
-                bar.addView(makeButton("‖ 暂停", colorPause) { onPauseClicked() })
-                bar.addView(makeButton("■ 结束", colorFail) { onStopClicked() })
-            }
-        }
-        return bar
-    }
-
-    private fun makeButton(text: String, color: Int, onClick: () -> Unit): Button =
-        Button(this).apply {
-            this.text = text
-            setTextColor(0xFFFFFFFF.toInt())
-            background = pillBg(color)
-            val lp = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { marginStart = dp(4); marginEnd = dp(4) }
-            layoutParams = lp
-            setOnClickListener { onClick() }
-        }
-
-    // 完整态按钮动作 ----------------------------------------------------------
-    private fun onStartClicked() { startAuto(); collapseToBall() }          // 开始即收回成球
-    private fun onResumeClicked() { if (paused) togglePause(); collapseToBall() } // 继续也收回
-    private fun onPauseClicked() { if (auto && !paused) togglePause(); scheduleCollapse() } // 暂停停留3s
-    private fun onStopClicked() { stopAuto("手动停止") }                     // 结束后停留3s(见 stopAuto)
-
-    /** 悬浮球只贴左右边：松手/重建后按中心点判定吸最近边，y 夹在屏内并持久化。 */
-    private fun snapToEdge() {
-        val root = overlay ?: return
-        val p = overlayParams ?: return
-        val wm = windowManager ?: return
-        val bounds = wm.currentWindowMetrics.bounds
-        val vw = root.width.takeIf { it > 0 } ?: dp(48)
-        val vh = root.height.takeIf { it > 0 } ?: dp(48)
-        val isRight = (p.x + vw / 2) >= bounds.width() / 2
-        p.x = if (isRight) (bounds.width() - vw) else 0
-        p.y = p.y.coerceIn(0, (bounds.height() - vh).coerceAtLeast(0))
-        Prefs.setOverlayPos(this, p.y, isRight)
-        // 球态：吸边方向确定后，按贴左/贴右更新半球圆弧朝向（朝内圆、贴边平）。
-        if (overlayLevel == OverlayLevel.BALL) ballView?.background = ballShape(stateColor(), isRight)
-        runCatching { wm.updateViewLayout(root, p) }
-    }
-
-    /**
-     * 隐藏时不仅看不见，还要让它【不拦截触摸】(FLAG_NOT_TOUCHABLE)，
-     * 否则我们点选项/确定时会点到悬浮窗自己。
-     */
-    private fun setOverlayVisible(visible: Boolean) {
-        val p = overlayParams ?: return
-        p.flags = if (visible)
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-        else
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-        overlay?.visibility = if (visible) View.VISIBLE else View.INVISIBLE
-        runCatching { windowManager?.updateViewLayout(overlay, p) }
-    }
-
-    /** 运行态/进度变化后刷新悬浮窗显示（重建当前层级即可）。 */
-    private fun updateAutoButton() { renderLevel() }
 
     // ---------------------------------------------------------------------
     // 自动答题循环
@@ -463,9 +162,9 @@ class DumpAccessibilityService : AccessibilityService() {
     private fun togglePause() {
         if (!auto) { toast("未在运行，无需暂停"); return }
         paused = !paused
-        updateAutoButton()
+        overlay.refresh()
         if (paused) {
-            setOverlayVisible(true)   // 暂停时露出悬浮条，方便点"继续"，也不挡屏幕
+            overlay.setVisible(true)   // 暂停时露出悬浮球，方便点"继续"，也不挡屏幕
             toast("已暂停（进度保留，点继续接着跑）")
             Log.i(TAG, "PAUSE at groups=$groupsDone answered=$answered blindRound=$blindRound")
         } else {
@@ -492,7 +191,7 @@ class DumpAccessibilityService : AccessibilityService() {
         lastTapKey = null
         lastTapIntended = emptyList()
         unknownStreak = 0
-        updateAutoButton()
+        overlay.refresh()
         val mode = if (Prefs.bruteMode(this)) "暴力" else "智能"
         toast("开始自动答题（$mode 模式），目标 $targetGroups 组")
         scheduleStep()
@@ -502,16 +201,16 @@ class DumpAccessibilityService : AccessibilityService() {
         if (!auto) return
         auto = false
         paused = false
-        setOverlayVisible(true)
-        updateAutoButton()
-        scheduleCollapse()   // 结束后完整态停留 N 秒再自动收回成球
+        overlay.setVisible(true)
+        overlay.refresh()
+        overlay.scheduleCollapse()   // 结束后完整态停留 N 秒再自动收回成球
         clearDumps()   // 不管是手动停止还是达到目标组数自动停止，都顺手清掉本次运行的调试临时文件
         OcrLearn.save()   // 落盘本次攒到的 OCR 等价对候选
         Log.i(TAG, "STOP: $reason (groups=$groupsDone answered=$answered)")
         val summary = "$reason（完成 $groupsDone 组，答 $answered 题）"
         toast("已停止：$summary")
         // 非手动停止(达标完成 / 卡住需人工)再发一条通知——无人值守时 toast 一闪而过看不到。
-        if (reason != "手动停止") notifyStop(summary)
+        if (reason != "手动停止" && reason != "手动结束") notifyStop(summary)
     }
 
     /** 发一条"自动答题已停止"的通知。Android13+ 没授通知权限时系统会静默丢弃，不影响其它逻辑。 */
@@ -558,7 +257,7 @@ class DumpAccessibilityService : AccessibilityService() {
                     blindRound = 0
                     groupInProgress = false
                     failCount.clear()
-                    updateAutoButton()
+                    overlay.refresh()
                     Log.i(TAG, "ACT TASK_DETAIL 一组完成 groupsDone=$groupsDone")
                     if (groupsDone >= targetGroups) { stopAuto("已达目标 $targetGroups 组"); return }
                 }
@@ -723,10 +422,10 @@ class DumpAccessibilityService : AccessibilityService() {
     // ---------------------------------------------------------------------
 
     private fun debugStep() {
-        setOverlayVisible(false)
+        overlay.setVisible(false)
         mainHandler.postDelayed({
             captureScreen { bmp ->
-                setOverlayVisible(true)
+                overlay.setVisible(true)
                 if (bmp == null) { saveToFile("step", "<no bitmap>"); return@captureScreen }
                 OcrEngine.recognize(bmp) { text ->
                     val lines = if (text != null) toLines(text) else emptyList()
@@ -747,11 +446,11 @@ class DumpAccessibilityService : AccessibilityService() {
     // 截图 + OCR + 解析
     // ---------------------------------------------------------------------
 
-    // 注意：捕获后【不】恢复悬浮条可见，要等点击全部完成(finishStep)才恢复，
-    // 否则点击会落到悬浮条上。
+    // 注意：捕获后【不】恢复悬浮球可见，要等点击全部完成(finishStep)才恢复，
+    // 否则点击会落到悬浮球上。
     private fun captureAndParse(onModel: (ScreenModel?) -> Unit) {
-        setOverlayVisible(false)
-        // 隐藏悬浮条到截图之间的等待，也随速度缩放(留 60ms 下限让它真消失)。
+        overlay.setVisible(false)
+        // 隐藏悬浮球到截图之间的等待，也随速度缩放(留 60ms 下限让它真消失)。
         val preCapture = (Prefs.stepIntervalMs(this) / 8).coerceIn(60L, 150L)
         mainHandler.postDelayed({
             captureScreen { bmp ->
@@ -765,9 +464,9 @@ class DumpAccessibilityService : AccessibilityService() {
         }, preCapture)
     }
 
-    /** 一步点击全部完成后调用：恢复悬浮条 + 安排下一步。 */
+    /** 一步点击全部完成后调用：恢复悬浮球 + 安排下一步。 */
     private fun finishStep() {
-        setOverlayVisible(true)
+        overlay.setVisible(true)
         scheduleStep()
     }
 
@@ -825,10 +524,10 @@ class DumpAccessibilityService : AccessibilityService() {
     // ---------------------------------------------------------------------
 
     private fun ocrDump() {
-        setOverlayVisible(false)
+        overlay.setVisible(false)
         mainHandler.postDelayed({
             captureScreen { bmp ->
-                setOverlayVisible(true)
+                overlay.setVisible(true)
                 if (bmp == null) { toast("截图失败"); return@captureScreen }
                 OcrEngine.recognize(bmp) { text ->
                     if (text == null) { toast("OCR失败"); return@recognize }
