@@ -64,7 +64,6 @@ class DumpAccessibilityService : AccessibilityService() {
     private enum class OverlayLevel { BALL, ARCH, FULL }
     private var overlayLevel = OverlayLevel.BALL
     private val collapseRunnable = Runnable { collapseToBall() }
-    private var longPressRunnable: Runnable? = null
 
     private lateinit var store: AnswerStore
 
@@ -143,7 +142,7 @@ class DumpAccessibilityService : AccessibilityService() {
         auto = false
         clearDumps()   // 服务被解绑/系统关闭也算"结束"，不能依赖手动点清理按钮才删临时文件
         runCatching { unregisterReceiver(cmdReceiver) }
-        cancelCollapse(); cancelLongPress()
+        cancelCollapse()
         overlay?.let { runCatching { windowManager?.removeView(it) } }
         overlay = null
     }
@@ -191,35 +190,29 @@ class DumpAccessibilityService : AccessibilityService() {
 
         root.setOnTouchListener(object : View.OnTouchListener {
             private var ix = 0; private var iy = 0; private var dx = 0f; private var dy = 0f
-            private var moved = false; private var dragging = false
+            private var moved = false
+            private val slop = dp(6)
             override fun onTouch(v: View, e: MotionEvent): Boolean {
                 when (e.action) {
                     MotionEvent.ACTION_DOWN -> {
                         ix = params.x; iy = params.y; dx = e.rawX; dy = e.rawY
-                        moved = false; dragging = false
+                        moved = false
                         cancelCollapse()                       // 交互期间不自动收回
-                        // 长按才进入拖拽，避免和"单击=展开"冲突。
-                        longPressRunnable = Runnable { dragging = true }.also {
-                            mainHandler.postDelayed(it, 300)
-                        }
                         return true
                     }
                     MotionEvent.ACTION_MOVE -> {
                         val mx = e.rawX - dx; val my = e.rawY - dy
-                        if (abs(mx) > dp(8) || abs(my) > dp(8)) {
-                            moved = true
-                            if (!dragging) cancelLongPress()   // 长按前就移动=滑动，不算拖拽也不算点击
-                        }
-                        if (dragging) {
+                        // 直接拖：移动超过阈值即视为拖拽(不需要长按)，标准悬浮球手感。
+                        if (!moved && (abs(mx) > slop || abs(my) > slop)) moved = true
+                        if (moved) {
                             params.x = ix + mx.toInt(); params.y = iy + my.toInt()
                             runCatching { wm.updateViewLayout(v, params) }
                         }
                         return true
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        cancelLongPress()
-                        if (dragging) snapToEdge()
-                        else if (!moved) onOverlayTap()
+                        if (moved) snapToEdge()                 // 拖过=吸边
+                        else onOverlayTap()                     // 没动=单击展开一级
                         scheduleCollapse()
                         return true
                     }
@@ -233,7 +226,6 @@ class DumpAccessibilityService : AccessibilityService() {
             .onFailure { toast("悬浮窗添加失败：${it.message}") }
     }
 
-    private fun cancelLongPress() { longPressRunnable?.let { mainHandler.removeCallbacks(it) }; longPressRunnable = null }
     private fun cancelCollapse() { mainHandler.removeCallbacks(collapseRunnable) }
     /** 无操作 N 秒后自动收回成球。每次交互后重排。 */
     private fun scheduleCollapse() {
