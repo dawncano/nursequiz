@@ -125,8 +125,12 @@ object ScreenParser {
         //   原先 cy<2000 是写死上限，5选项题把确定推过 2000 就找不到→UNKNOWN。改成相对导航栏后，
         //   不管几个选项把确定推多低，只要它还在导航栏上面就能稳定命中。
         val confirmUpper = navTop ?: ry(0.95)
-        val confirmLine = lines.firstOrNull {
-            strip(it.text).contains("确定") && it.box.top < confirmUpper && it.box.cy() > ry(0.30)
+        // 必须是"确定"按钮本身(短文本)，不能误匹配题干/选项里含"确定"二字的长句
+        // (真机实例：选项"药物剂量一旦确定终生不变"含确定，被当成按钮去点 → 反复切选项、真按钮永不点)。
+        // length<=4 排除长句；lastOrNull 取最靠下的那个(按钮在选项下方)，双保险。
+        val confirmLine = lines.lastOrNull {
+            val t = strip(it.text)
+            t.contains("确定") && t.length <= 4 && it.box.top < confirmUpper && it.box.cy() > ry(0.30)
         }
 
         // 【反馈页动作按钮(下一题/提交)】OCR 常把"一"认成"ー"，改用【位置】定位：右半边(cx>0.40W)、
