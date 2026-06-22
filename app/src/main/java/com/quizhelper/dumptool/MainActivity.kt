@@ -127,6 +127,8 @@ class MainActivity : Activity() {
         refreshStatus()
         refreshBanks()
         refreshLearn()
+        // 悬浮球若被拖到✕关闭过，打开App时让服务重新唤出（服务没开则无副作用）。
+        sendBroadcast(Intent("com.quizhelper.dumptool.SHOW").apply { setPackage(packageName) })
     }
 
     /** OCR 等价对候选：列出达标的"老被认混的两个字"，确认→入 ocrfix_user.json，忽略→清掉。 */

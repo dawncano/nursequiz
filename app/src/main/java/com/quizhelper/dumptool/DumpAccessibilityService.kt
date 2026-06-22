@@ -65,6 +65,8 @@ class DumpAccessibilityService : AccessibilityService() {
     private var overlayLevel = OverlayLevel.BALL
     private val collapseRunnable = Runnable { collapseToBall() }
     private var ballView: TextView? = null   // 球态视图，吸边后按贴左/贴右更新 D 形朝向
+    private var closeTargetView: TextView? = null   // 拖拽时底部浮出的 ✕ 关闭靶
+    private var overClose = false                    // 当前是否悬停在 ✕ 上
 
     private lateinit var store: AnswerStore
 
@@ -107,6 +109,7 @@ class DumpAccessibilityService : AccessibilityService() {
                     startAuto()
                 }
                 "com.quizhelper.dumptool.STOP" -> stopAuto("广播停止")
+                "com.quizhelper.dumptool.SHOW" -> addOverlay()   // 球被拖到✕关闭后，打开App重新唤出
                 "com.quizhelper.dumptool.STEP" -> debugStep()
                 "com.quizhelper.dumptool.OCR" -> ocrDump()
                 "com.quizhelper.dumptool.NODES" -> nodeDump()
@@ -125,6 +128,7 @@ class DumpAccessibilityService : AccessibilityService() {
         val filter = IntentFilter().apply {
             addAction("com.quizhelper.dumptool.START")
             addAction("com.quizhelper.dumptool.STOP")
+            addAction("com.quizhelper.dumptool.SHOW")
             addAction("com.quizhelper.dumptool.STEP")
             addAction("com.quizhelper.dumptool.OCR")
             addAction("com.quizhelper.dumptool.NODES")
@@ -144,6 +148,7 @@ class DumpAccessibilityService : AccessibilityService() {
         clearDumps()   // 服务被解绑/系统关闭也算"结束"，不能依赖手动点清理按钮才删临时文件
         runCatching { unregisterReceiver(cmdReceiver) }
         cancelCollapse()
+        hideCloseTarget()
         overlay?.let { runCatching { windowManager?.removeView(it) } }
         overlay = null
     }
@@ -199,12 +204,19 @@ class DumpAccessibilityService : AccessibilityService() {
                         val p = overlayParams ?: return true
                         p.x = ix + (e.rawX - downX).toInt(); p.y = iy + (e.rawY - downY).toInt()
                         runCatching { windowManager?.updateViewLayout(this, p) }
+                        showCloseTarget()                          // 拖拽中底部浮出 ✕
+                        updateCloseHover(p.x + width / 2, p.y + height / 2)
                     }
                     return true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (moved) collapseToBall()           // 拖完立刻吸附成球
-                    else { onOverlayTap(); scheduleCollapse() }   // 没动=单击展开一级
+                    val wasOverClose = moved && overClose
+                    hideCloseTarget()
+                    when {
+                        wasOverClose -> performClose()            // 拖进 ✕ = 停答题+藏球
+                        moved -> collapseToBall()                 // 拖完立刻吸附成球
+                        else -> { onOverlayTap(); scheduleCollapse() } // 没动=单击展开一级
+                    }
                     return true
                 }
             }
@@ -236,6 +248,56 @@ class DumpAccessibilityService : AccessibilityService() {
         root.post { snapToEdge() }
         runCatching { wm.addView(root, params) }
             .onFailure { toast("悬浮窗添加失败：${it.message}") }
+    }
+
+    /** 拖拽时在底部中央浮出 ✕ 关闭靶（不拦截触摸，只做视觉）。 */
+    private fun showCloseTarget() {
+        if (closeTargetView != null) return
+        val wm = windowManager ?: return
+        val tv = TextView(this).apply {
+            text = "✕"; setTextColor(0xFFFFFFFF.toInt()); textSize = 26f; gravity = Gravity.CENTER
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xAA000000.toInt()) }
+            alpha = 0.85f
+        }
+        val d = dp(64)
+        val lp = WindowManager.LayoutParams(
+            d, d, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply { gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; y = dp(72) }
+        closeTargetView = tv
+        runCatching { wm.addView(tv, lp) }
+    }
+
+    private fun hideCloseTarget() {
+        closeTargetView?.let { v -> runCatching { windowManager?.removeView(v) } }
+        closeTargetView = null
+        overClose = false
+    }
+
+    /** 球中心是否压在 ✕ 靶上：压上=放大高亮，记 overClose 供松手判定。 */
+    private fun updateCloseHover(ballCx: Int, ballCy: Int) {
+        val wm = windowManager ?: return
+        val b = wm.currentWindowMetrics.bounds
+        val tx = b.width() / 2
+        val ty = b.height() - dp(72) - dp(32)   // 靶中心：底部 margin + 半径
+        val rad = dp(72)
+        val dx = ballCx - tx; val dy = ballCy - ty
+        overClose = dx * dx + dy * dy < rad * rad
+        closeTargetView?.apply {
+            val s = if (overClose) 1.3f else 1f
+            scaleX = s; scaleY = s; alpha = if (overClose) 1f else 0.85f
+        }
+    }
+
+    /** 拖进 ✕：停掉正在进行的答题并移除悬浮球（服务保留，打开App可重新唤出）。 */
+    private fun performClose() {
+        if (auto) stopAuto("手动结束")
+        cancelCollapse()
+        overlay?.let { runCatching { windowManager?.removeView(it) } }
+        overlay = null
+        ballView = null
+        toast("悬浮球已关闭，打开 App 可重新显示")
     }
 
     private fun cancelCollapse() { mainHandler.removeCallbacks(collapseRunnable) }
