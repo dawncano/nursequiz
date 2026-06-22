@@ -23,7 +23,8 @@ data class ScreenModel(
     val correctIdx: List<Int> = emptyList(), // 正确答案的选项下标(0=A)
     val yourIdx: List<Int> = emptyList(),    // FEEDBACK页"你的答案"实际选项下标(0=A)，用于核实点击是否真的命中
     val title: String = "",
-    val project: String = ""
+    val project: String = "",
+    val overflow: Boolean = false            // QUESTION页内容超出可视区(确定+导航栏地标都被截断)，无法作答
 ) {
     fun describe(): String = buildString {
         append("kind=$kind multi=$isMulti\n")
@@ -219,6 +220,10 @@ object ScreenParser {
         val correct = ansLine?.let { lettersFrom(it.text) } ?: emptyList()
         val yours = ansLine?.let { yoursFrom(it.text) } ?: emptyList()
 
+        // 溢出判定：是答题页(有选项)，但"确定"和"底部导航栏地标"都没找到 → 底部被截断、内容超出
+        // 可视区。注意要区别于"确定那行被 OCR 偶尔漏读"——后者导航栏地标(纠错上报)仍在，不算溢出。
+        val overflow = kind == ScreenKind.QUESTION && confirmXY == null && navTop == null
+
         return ScreenModel(
             kind = kind,
             questionText = questionText,
@@ -228,7 +233,8 @@ object ScreenParser {
             nextBtn = nextLine?.box?.let { XY(it.cx(), it.cy()) },
             isSubmit = isSubmit,
             correctIdx = correct,
-            yourIdx = yours
+            yourIdx = yours,
+            overflow = overflow
         )
     }
 

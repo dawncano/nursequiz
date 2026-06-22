@@ -74,6 +74,7 @@ class DumpAccessibilityService : AccessibilityService() {
     private var lastQuestionText = ""      // QUESTION页的题干，用于FEEDBACK存答案(避免FEEDBACK多出解析文字)
     private var lastStuckQ = ""            // 连续卡在同一题的检测
     private var sameQCount = 0
+    private var overflowStreak = 0         // 连续"题目超出可视区"帧数，超阈值软停等人工
 
     // 兜底：已存答案连续"判错"次数(按题干稳定key)。达到上限就不再信任存档答案，
     // 改走 blindRound 轮流盲选——保证哪怕坐标/识别出了我们没预料到的错，也能跳出死循环。
@@ -276,6 +277,7 @@ class DumpAccessibilityService : AccessibilityService() {
         lastQuestionText = ""
         lastStuckQ = ""
         sameQCount = 0
+        overflowStreak = 0
         failCount.clear()
         lastTapKey = null
         lastTapIntended = emptyList()
@@ -337,6 +339,7 @@ class DumpAccessibilityService : AccessibilityService() {
 
     private fun act(m: ScreenModel) {
         if (m.kind != ScreenKind.UNKNOWN) unknownStreak = 0
+        if (!(m.kind == ScreenKind.QUESTION && m.overflow)) overflowStreak = 0
         when (m.kind) {
             ScreenKind.TASK_DETAIL -> {
                 if (groupInProgress) {
@@ -354,6 +357,17 @@ class DumpAccessibilityService : AccessibilityService() {
                 tap(m.startBtn); finishStep()
             }
             ScreenKind.QUESTION -> {
+                // 内容超出可视区(确定+导航栏地标都被截断)：当前架构靠单帧截图作答，无法处理。
+                // 连续几帧确认不是 OCR 偶发抖动后，软停等人工(滑一下/手动答这题)，不死循环空转。
+                if (m.overflow) {
+                    overflowStreak++
+                    Log.w(TAG, "ACT QUESTION 内容超出可视区 第${overflowStreak}次 q='${m.questionText}'")
+                    if (overflowStreak >= 3) {
+                        stopAuto("题目超出屏幕(选项/确定被截断)，需人工滑动或手动作答后重新开始")
+                        return
+                    }
+                    finishStep(); return
+                }
                 if (m.options.isEmpty() || m.confirm == null) {
                     Log.w(TAG, "ACT QUESTION 无选项或无确定, 跳过 q='${m.questionText}'")
                     finishStep(); return
