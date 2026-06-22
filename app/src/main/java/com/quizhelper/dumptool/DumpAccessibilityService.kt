@@ -169,11 +169,54 @@ class DumpAccessibilityService : AccessibilityService() {
     /** 当前运行态对应的主题色：空闲蓝 / 运行绿 / 暂停橙。 */
     private fun stateColor(): Int = when { !auto -> colorIdle; paused -> colorPause; else -> colorRun }
 
+    /**
+     * 悬浮窗根容器。重写 onInterceptTouchEvent：手指移动超阈值就【从子按钮手里抢过手势】进入拖拽，
+     * 这样完整态(有按钮)也能拖；没移动才让按钮正常点击。拖完立刻收回成球(吸附)。
+     */
+    private inner class DragFrame(ctx: Context) : FrameLayout(ctx) {
+        private var ix = 0; private var iy = 0; private var downX = 0f; private var downY = 0f
+        private var moved = false
+        private val slop = dp(6)
+        private fun begin(e: MotionEvent) {
+            val p = overlayParams ?: return
+            ix = p.x; iy = p.y; downX = e.rawX; downY = e.rawY; moved = false
+            cancelCollapse()                      // 交互期间不自动收回
+        }
+        private fun beyondSlop(e: MotionEvent) = abs(e.rawX - downX) > slop || abs(e.rawY - downY) > slop
+        override fun onInterceptTouchEvent(e: MotionEvent): Boolean {
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> begin(e)
+                MotionEvent.ACTION_MOVE -> if (beyondSlop(e)) { moved = true; return true }  // 抢手势
+            }
+            return false
+        }
+        override fun onTouchEvent(e: MotionEvent): Boolean {
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { begin(e); return true }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!moved && beyondSlop(e)) moved = true
+                    if (moved) {
+                        val p = overlayParams ?: return true
+                        p.x = ix + (e.rawX - downX).toInt(); p.y = iy + (e.rawY - downY).toInt()
+                        runCatching { windowManager?.updateViewLayout(this, p) }
+                    }
+                    return true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (moved) collapseToBall()           // 拖完立刻吸附成球
+                    else { onOverlayTap(); scheduleCollapse() }   // 没动=单击展开一级
+                    return true
+                }
+            }
+            return super.onTouchEvent(e)
+        }
+    }
+
     private fun addOverlay() {
         if (overlay != null) return
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         windowManager = wm
-        val root = FrameLayout(this)
+        val root = DragFrame(this)
         overlay = root
 
         val screenH = wm.currentWindowMetrics.bounds.height()
@@ -189,38 +232,6 @@ class DumpAccessibilityService : AccessibilityService() {
         ).apply { gravity = Gravity.TOP or Gravity.LEFT; x = 0; y = initY }
         overlayParams = params
 
-        root.setOnTouchListener(object : View.OnTouchListener {
-            private var ix = 0; private var iy = 0; private var dx = 0f; private var dy = 0f
-            private var moved = false
-            private val slop = dp(6)
-            override fun onTouch(v: View, e: MotionEvent): Boolean {
-                when (e.action) {
-                    MotionEvent.ACTION_DOWN -> {
-                        ix = params.x; iy = params.y; dx = e.rawX; dy = e.rawY
-                        moved = false
-                        cancelCollapse()                       // 交互期间不自动收回
-                        return true
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        val mx = e.rawX - dx; val my = e.rawY - dy
-                        // 直接拖：移动超过阈值即视为拖拽(不需要长按)，标准悬浮球手感。
-                        if (!moved && (abs(mx) > slop || abs(my) > slop)) moved = true
-                        if (moved) {
-                            params.x = ix + mx.toInt(); params.y = iy + my.toInt()
-                            runCatching { wm.updateViewLayout(v, params) }
-                        }
-                        return true
-                    }
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        if (moved) snapToEdge()                 // 拖过=吸边
-                        else onOverlayTap()                     // 没动=单击展开一级
-                        scheduleCollapse()
-                        return true
-                    }
-                }
-                return false
-            }
-        })
         renderLevel()
         root.post { snapToEdge() }
         runCatching { wm.addView(root, params) }
