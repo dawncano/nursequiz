@@ -15,6 +15,7 @@ import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Rect
+import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -25,7 +26,9 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.google.mlkit.vision.text.Text
@@ -53,11 +56,15 @@ class DumpAccessibilityService : AccessibilityService() {
     }
 
     private var windowManager: WindowManager? = null
-    private var overlay: LinearLayout? = null
+    private var overlay: FrameLayout? = null     // 悬浮窗根容器，按层级换内容(球/胶囊/完整)
     private var overlayParams: WindowManager.LayoutParams? = null
-    private var autoButton: Button? = null
-    private var pauseButton: Button? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // 悬浮窗展开层级：球(依附) → 胶囊(显示进度) → 完整(按钮)。无操作 N 秒自动收回成球。
+    private enum class OverlayLevel { BALL, ARCH, FULL }
+    private var overlayLevel = OverlayLevel.BALL
+    private val collapseRunnable = Runnable { collapseToBall() }
+    private var longPressRunnable: Runnable? = null
 
     private lateinit var store: AnswerStore
 
@@ -89,6 +96,7 @@ class DumpAccessibilityService : AccessibilityService() {
 
     private val colorIdle = 0xFF3F51B5.toInt()
     private val colorRun = 0xFF2E7D32.toInt()
+    private val colorPause = 0xFFEF6C00.toInt()
     private val colorFail = 0xFFC62828.toInt()
 
     private val cmdReceiver = object : BroadcastReceiver() {
@@ -135,9 +143,9 @@ class DumpAccessibilityService : AccessibilityService() {
         auto = false
         clearDumps()   // 服务被解绑/系统关闭也算"结束"，不能依赖手动点清理按钮才删临时文件
         runCatching { unregisterReceiver(cmdReceiver) }
+        cancelCollapse(); cancelLongPress()
         overlay?.let { runCatching { windowManager?.removeView(it) } }
         overlay = null
-        autoButton = null
     }
 
     /** 进程意外崩溃时尽力清一次临时文件再交还给系统默认处理（不吞掉崩溃，只是顺手清理）。 */
@@ -153,26 +161,23 @@ class DumpAccessibilityService : AccessibilityService() {
     // 悬浮控制条
     // ---------------------------------------------------------------------
 
+    private fun dp(v: Int): Int = (resources.displayMetrics.density * v).toInt()
+
+    /** 目标组数：运行中取本次锁定的 targetGroups，空闲时取设置页当前值。 */
+    private fun displayTarget(): Int = if (auto) targetGroups else Prefs.targetGroups(this)
+
+    /** 当前运行态对应的主题色：空闲蓝 / 运行绿 / 暂停橙。 */
+    private fun stateColor(): Int = when { !auto -> colorIdle; paused -> colorPause; else -> colorRun }
+
     private fun addOverlay() {
         if (overlay != null) return
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         windowManager = wm
-        val container = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val root = FrameLayout(this)
+        overlay = root
 
-        // 悬浮条只留"开始/停止"。OCR/节点 是调试导出，对用户没意义，从界面去掉；
-        // 仍可用 adb 广播(OCR/NODES/STEP)触发，方便排查。
-        autoButton = makeButton("▶ 开始") { toggleAuto() }
-        pauseButton = makeButton("‖ 暂停") { togglePause() }
-        container.addView(autoButton)
-        container.addView(pauseButton)
-        overlay = container
-
-        // 默认位置：屏幕高度 15% 处偏右下角（百分比，适配不同分辨率）。
-        // 若用户拖动过则恢复上次位置。
         val screenH = wm.currentWindowMetrics.bounds.height()
-        val savedX = Prefs.overlayX(this)
         val savedY = Prefs.overlayY(this)
-        val initX = if (savedX != Int.MIN_VALUE) savedX else 0
         val initY = if (savedY != Int.MIN_VALUE) savedY else (screenH * 0.15f).toInt()
 
         val params = WindowManager.LayoutParams(
@@ -181,43 +186,183 @@ class DumpAccessibilityService : AccessibilityService() {
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
-        ).apply { gravity = Gravity.BOTTOM or Gravity.END; x = initX; y = initY }
+        ).apply { gravity = Gravity.TOP or Gravity.LEFT; x = 0; y = initY }
         overlayParams = params
 
-        container.setOnTouchListener(object : View.OnTouchListener {
-            private var ix = 0; private var iy = 0; private var dx = 0f; private var dy = 0f; private var moved = false
+        root.setOnTouchListener(object : View.OnTouchListener {
+            private var ix = 0; private var iy = 0; private var dx = 0f; private var dy = 0f
+            private var moved = false; private var dragging = false
             override fun onTouch(v: View, e: MotionEvent): Boolean {
                 when (e.action) {
-                    MotionEvent.ACTION_DOWN -> { ix = params.x; iy = params.y; dx = e.rawX; dy = e.rawY; moved = false }
-                    MotionEvent.ACTION_MOVE -> {
-                        val mx = (e.rawX - dx).toInt(); val my = (e.rawY - dy).toInt()
-                        if (abs(mx) > 12 || abs(my) > 12) moved = true
-                        params.x = ix + mx; params.y = iy + my
-                        runCatching { wm.updateViewLayout(v, params) }
+                    MotionEvent.ACTION_DOWN -> {
+                        ix = params.x; iy = params.y; dx = e.rawX; dy = e.rawY
+                        moved = false; dragging = false
+                        cancelCollapse()                       // 交互期间不自动收回
+                        // 长按才进入拖拽，避免和"单击=展开"冲突。
+                        longPressRunnable = Runnable { dragging = true }.also {
+                            mainHandler.postDelayed(it, 300)
+                        }
+                        return true
                     }
-                    MotionEvent.ACTION_UP -> {
-                        if (moved) Prefs.setOverlayPos(this@DumpAccessibilityService, params.x, params.y)
+                    MotionEvent.ACTION_MOVE -> {
+                        val mx = e.rawX - dx; val my = e.rawY - dy
+                        if (abs(mx) > dp(8) || abs(my) > dp(8)) {
+                            moved = true
+                            if (!dragging) cancelLongPress()   // 长按前就移动=滑动，不算拖拽也不算点击
+                        }
+                        if (dragging) {
+                            params.x = ix + mx.toInt(); params.y = iy + my.toInt()
+                            runCatching { wm.updateViewLayout(v, params) }
+                        }
+                        return true
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        cancelLongPress()
+                        if (dragging) snapToEdge()
+                        else if (!moved) onOverlayTap()
+                        scheduleCollapse()
+                        return true
                     }
                 }
-                return moved
+                return false
             }
         })
-        runCatching { wm.addView(container, params) }
-            .onFailure { toast("悬浮条添加失败：${it.message}") }
+        renderLevel()
+        root.post { snapToEdge() }
+        runCatching { wm.addView(root, params) }
+            .onFailure { toast("悬浮窗添加失败：${it.message}") }
     }
 
-    private fun makeButton(text: String, onClick: () -> Unit): Button =
+    private fun cancelLongPress() { longPressRunnable?.let { mainHandler.removeCallbacks(it) }; longPressRunnable = null }
+    private fun cancelCollapse() { mainHandler.removeCallbacks(collapseRunnable) }
+    /** 无操作 N 秒后自动收回成球。每次交互后重排。 */
+    private fun scheduleCollapse() {
+        cancelCollapse()
+        mainHandler.postDelayed(collapseRunnable, Prefs.attachDelayMs(this))
+    }
+    private fun collapseToBall() { cancelCollapse(); setLevel(OverlayLevel.BALL) }
+
+    /** 单击展开一级：球→胶囊→完整。完整态点空白不再展开。 */
+    private fun onOverlayTap() {
+        when (overlayLevel) {
+            OverlayLevel.BALL -> setLevel(OverlayLevel.ARCH)
+            OverlayLevel.ARCH -> setLevel(OverlayLevel.FULL)
+            OverlayLevel.FULL -> {}
+        }
+    }
+
+    private fun setLevel(level: OverlayLevel) {
+        overlayLevel = level
+        renderLevel()
+    }
+
+    /** 按当前层级 + 运行态重建悬浮窗内容，重建后重新吸边（宽度变了要保持贴边）。 */
+    private fun renderLevel() {
+        mainHandler.post {
+            val root = overlay ?: return@post
+            root.removeAllViews()
+            val content = when (overlayLevel) {
+                OverlayLevel.BALL -> buildBall()
+                OverlayLevel.ARCH -> buildArch()
+                OverlayLevel.FULL -> buildFull()
+            }
+            root.addView(content)
+            root.post { snapToEdge() }
+        }
+    }
+
+    private fun circleBg(color: Int) = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(color) }
+    private fun pillBg(color: Int) = GradientDrawable().apply {
+        shape = GradientDrawable.RECTANGLE; cornerRadius = dp(22).toFloat(); setColor(color)
+    }
+
+    /** 球态：依附边缘的小球，透明度高(更不挡)。图标随运行态变。 */
+    private fun buildBall(): View {
+        val glyph = when { !auto -> "▶"; paused -> "‖"; else -> "●" }
+        return TextView(this).apply {
+            text = glyph
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 18f
+            gravity = Gravity.CENTER
+            background = circleBg(stateColor())
+            alpha = 0.55f
+            val d = dp(48)
+            layoutParams = FrameLayout.LayoutParams(d, d)
+        }
+    }
+
+    /** 胶囊态：从边缘探出，显示"当前/目标"进度。 */
+    private fun buildArch(): View {
+        return TextView(this).apply {
+            text = "${groupsDone}/${displayTarget()}"
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 16f
+            gravity = Gravity.CENTER
+            background = pillBg(stateColor())
+            alpha = 0.88f
+            setPadding(dp(18), dp(8), dp(18), dp(8))
+        }
+    }
+
+    /** 完整态：按运行态显示按钮。空闲=开始(进度)；运行=暂停|结束；暂停=继续(进度)|结束。 */
+    private fun buildFull(): View {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = pillBg(0xCC222222.toInt())
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            alpha = 0.95f
+        }
+        val t = displayTarget()
+        when {
+            !auto -> bar.addView(makeButton("▶ 开始 (0/$t)", colorIdle) { onStartClicked() })
+            paused -> {
+                bar.addView(makeButton("▶ 继续 ($groupsDone/$t)", colorRun) { onResumeClicked() })
+                bar.addView(makeButton("■ 结束", colorFail) { onStopClicked() })
+            }
+            else -> {
+                bar.addView(makeButton("‖ 暂停", colorPause) { onPauseClicked() })
+                bar.addView(makeButton("■ 结束", colorFail) { onStopClicked() })
+            }
+        }
+        return bar
+    }
+
+    private fun makeButton(text: String, color: Int, onClick: () -> Unit): Button =
         Button(this).apply {
             this.text = text
             setTextColor(0xFFFFFFFF.toInt())
-            setBackgroundColor(colorIdle)
-            alpha = 0.9f
+            background = pillBg(color)
+            val lp = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = dp(4); marginEnd = dp(4) }
+            layoutParams = lp
             setOnClickListener { onClick() }
         }
 
+    // 完整态按钮动作 ----------------------------------------------------------
+    private fun onStartClicked() { startAuto(); collapseToBall() }          // 开始即收回成球
+    private fun onResumeClicked() { if (paused) togglePause(); collapseToBall() } // 继续也收回
+    private fun onPauseClicked() { if (auto && !paused) togglePause(); scheduleCollapse() } // 暂停停留3s
+    private fun onStopClicked() { stopAuto("手动停止") }                     // 结束后停留3s(见 stopAuto)
+
+    /** 悬浮球只贴左右边：松手/重建后按中心点判定吸最近边，y 夹在屏内并持久化。 */
+    private fun snapToEdge() {
+        val root = overlay ?: return
+        val p = overlayParams ?: return
+        val wm = windowManager ?: return
+        val bounds = wm.currentWindowMetrics.bounds
+        val vw = root.width.takeIf { it > 0 } ?: dp(48)
+        val vh = root.height.takeIf { it > 0 } ?: dp(48)
+        val isRight = (p.x + vw / 2) >= bounds.width() / 2
+        p.x = if (isRight) (bounds.width() - vw) else 0
+        p.y = p.y.coerceIn(0, (bounds.height() - vh).coerceAtLeast(0))
+        Prefs.setOverlayPos(this, p.y, isRight)
+        runCatching { wm.updateViewLayout(root, p) }
+    }
+
     /**
      * 隐藏时不仅看不见，还要让它【不拦截触摸】(FLAG_NOT_TOUCHABLE)，
-     * 否则我们点选项/确定时会点到悬浮条自己。
+     * 否则我们点选项/确定时会点到悬浮窗自己。
      */
     private fun setOverlayVisible(visible: Boolean) {
         val p = overlayParams ?: return
@@ -229,25 +374,12 @@ class DumpAccessibilityService : AccessibilityService() {
         runCatching { windowManager?.updateViewLayout(overlay, p) }
     }
 
-    private fun updateAutoButton() {
-        mainHandler.post {
-            autoButton?.let {
-                it.setBackgroundColor(if (auto) colorRun else colorIdle)
-                it.text = if (auto) "■ 停($groupsDone/$targetGroups)" else "▶ 开始"
-            }
-            pauseButton?.let {
-                it.text = if (paused) "▶ 继续" else "‖ 暂停"
-                it.setBackgroundColor(if (paused) colorRun else colorIdle)
-                it.alpha = if (auto) 0.9f else 0.4f   // 没运行时灰掉，提示暂停只在运行中可用
-            }
-        }
-    }
+    /** 运行态/进度变化后刷新悬浮窗显示（重建当前层级即可）。 */
+    private fun updateAutoButton() { renderLevel() }
 
     // ---------------------------------------------------------------------
     // 自动答题循环
     // ---------------------------------------------------------------------
-
-    private fun toggleAuto() { if (auto) stopAuto("手动停止") else startAuto() }
 
     /** 暂停/继续。暂停≠停止：auto 不变(计数全部保留)，只让循环停在原地；继续就接着跑。 */
     private fun togglePause() {
@@ -294,6 +426,7 @@ class DumpAccessibilityService : AccessibilityService() {
         paused = false
         setOverlayVisible(true)
         updateAutoButton()
+        scheduleCollapse()   // 结束后完整态停留 N 秒再自动收回成球
         clearDumps()   // 不管是手动停止还是达到目标组数自动停止，都顺手清掉本次运行的调试临时文件
         OcrLearn.save()   // 落盘本次攒到的 OCR 等价对候选
         Log.i(TAG, "STOP: $reason (groups=$groupsDone answered=$answered)")

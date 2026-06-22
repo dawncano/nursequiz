@@ -44,10 +44,15 @@ object Prefs {
     fun unknownLimit(c: Context): Int = sp(c).getInt(KEY_UNKNOWN, DEF_UNKNOWN).coerceIn(1, 50)
     fun setUnknownLimit(c: Context, v: Int) = sp(c).edit().putInt(KEY_UNKNOWN, v.coerceIn(1, 50)).apply()
 
-    // 悬浮条位置（拖动后保存，下次恢复）。Int.MIN_VALUE 表示"未设置，用默认百分比"。
-    fun overlayX(c: Context): Int = sp(c).getInt("overlay_x", Int.MIN_VALUE)
+    // 悬浮球只贴左右边，位置 = 垂直 y + 贴哪边。Int.MIN_VALUE 表示"未设置，用默认百分比高度"。
     fun overlayY(c: Context): Int = sp(c).getInt("overlay_y", Int.MIN_VALUE)
-    fun setOverlayPos(c: Context, x: Int, y: Int) = sp(c).edit().putInt("overlay_x", x).putInt("overlay_y", y).apply()
+    fun overlaySideRight(c: Context): Boolean = sp(c).getBoolean("overlay_right", true)
+    fun setOverlayPos(c: Context, y: Int, isRight: Boolean) =
+        sp(c).edit().putInt("overlay_y", y).putBoolean("overlay_right", isRight).apply()
+
+    // 悬浮窗无操作多少毫秒后自动收回成小球(默认3000，用户可调)。
+    fun attachDelayMs(c: Context): Long = sp(c).getLong("attach_delay_ms", 3000L).coerceIn(1000L, 30000L)
+    fun setAttachDelayMs(c: Context, v: Long) = sp(c).edit().putLong("attach_delay_ms", v.coerceIn(1000L, 30000L)).apply()
 
     /** 清空所有设置(恢复默认)。配合 AnswerStore.wipeAllData 用。 */
     fun clearAll(c: Context) = sp(c).edit().clear().apply()

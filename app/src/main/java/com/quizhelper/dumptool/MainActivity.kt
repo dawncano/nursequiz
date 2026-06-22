@@ -96,6 +96,9 @@ class MainActivity : Activity() {
         settingsContainer.addView(numberRow("连续无法识别多少次就停下", Prefs.unknownLimit(this).toString()) {
             it.toIntOrNull()?.let { v -> Prefs.setUnknownLimit(this, v) }
         })
+        settingsContainer.addView(numberRow("悬浮窗无操作多少毫秒收回成球（默认3000）", Prefs.attachDelayMs(this).toString()) {
+            it.toLongOrNull()?.let { v -> Prefs.setAttachDelayMs(this, v) }
+        })
     }
 
     /** 一行"标签 + 数字输入框"，失焦时把内容写进 Prefs（save 回调）。 */
