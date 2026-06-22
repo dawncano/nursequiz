@@ -64,6 +64,7 @@ class DumpAccessibilityService : AccessibilityService() {
     private enum class OverlayLevel { BALL, ARCH, FULL }
     private var overlayLevel = OverlayLevel.BALL
     private val collapseRunnable = Runnable { collapseToBall() }
+    private var ballView: TextView? = null   // 球态视图，吸边后按贴左/贴右更新 D 形朝向
 
     private lateinit var store: AnswerStore
 
@@ -263,12 +264,21 @@ class DumpAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun circleBg(color: Int) = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(color) }
     private fun pillBg(color: Int) = GradientDrawable().apply {
         shape = GradientDrawable.RECTANGLE; cornerRadius = dp(22).toFloat(); setColor(color)
     }
 
-    /** 球态：依附边缘的小球，透明度高(更不挡)。图标随运行态变。 */
+    /** 半球(D形)：贴边那侧切平、朝屏内那侧半圆，看起来嵌在屏幕边缘里。随贴左/贴右切换圆弧朝向。 */
+    private fun ballShape(color: Int, isRight: Boolean): GradientDrawable {
+        val r = dp(24).toFloat()   // = 球半径，朝内侧两角圆成半圆
+        val radii = if (isRight)
+            floatArrayOf(r, r, 0f, 0f, 0f, 0f, r, r)   // 贴右：左侧圆(朝内)、右侧平(贴边)
+        else
+            floatArrayOf(0f, 0f, r, r, r, r, 0f, 0f)   // 贴左：右侧圆(朝内)、左侧平(贴边)
+        return GradientDrawable().apply { shape = GradientDrawable.RECTANGLE; cornerRadii = radii; setColor(color) }
+    }
+
+    /** 球态：依附边缘的半球，透明度高(更不挡)。图标随运行态变。 */
     private fun buildBall(): View {
         val glyph = when { !auto -> "▶"; paused -> "‖"; else -> "●" }
         return TextView(this).apply {
@@ -276,10 +286,11 @@ class DumpAccessibilityService : AccessibilityService() {
             setTextColor(0xFFFFFFFF.toInt())
             textSize = 18f
             gravity = Gravity.CENTER
-            background = circleBg(stateColor())
-            alpha = 0.55f
+            background = ballShape(stateColor(), Prefs.overlaySideRight(this@DumpAccessibilityService))
+            alpha = 0.6f
             val d = dp(48)
             layoutParams = FrameLayout.LayoutParams(d, d)
+            ballView = this
         }
     }
 
@@ -349,6 +360,8 @@ class DumpAccessibilityService : AccessibilityService() {
         p.x = if (isRight) (bounds.width() - vw) else 0
         p.y = p.y.coerceIn(0, (bounds.height() - vh).coerceAtLeast(0))
         Prefs.setOverlayPos(this, p.y, isRight)
+        // 球态：吸边方向确定后，按贴左/贴右更新半球圆弧朝向（朝内圆、贴边平）。
+        if (overlayLevel == OverlayLevel.BALL) ballView?.background = ballShape(stateColor(), isRight)
         runCatching { wm.updateViewLayout(root, p) }
     }
 
