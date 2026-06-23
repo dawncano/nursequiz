@@ -422,46 +422,51 @@ class DumpAccessibilityService : AccessibilityService(), OverlayHost {
     // ---------------------------------------------------------------------
 
     private fun debugStep() {
-        overlay.setVisible(false)
-        mainHandler.postDelayed({
-            captureScreen { bmp ->
-                overlay.setVisible(true)
-                if (bmp == null) { saveToFile("step", "<no bitmap>"); return@captureScreen }
-                OcrEngine.recognize(bmp) { text ->
-                    val lines = if (text != null) toLines(text) else emptyList()
-                    val model = ScreenParser.parse(lines, bmp.width, bmp.height)
-                    val sb = StringBuilder("==== STEP ").append(humanTime()).append(" ====\n")
-                    sb.append(model.describe()).append("\n--- RAW OCR (").append(lines.size).append(" lines) ---\n")
-                    for (l in lines) sb.append(l.box.toShortString()).append(" \"").append(l.text).append("\"\n")
-                    saveToFile("step", sb.toString())
-                    copyToClipboard(sb.toString())
-                    Log.i(TAG, "STEP ${model.kind} lines=${lines.size}")
-                    bmp.recycle()
-                }
-            }
-        }, 150)
+        captureThenOcr(150, restoreOverlay = true) { text, bmp ->
+            if (bmp == null) { saveToFile("step", "<no bitmap>"); return@captureThenOcr }
+            val lines = if (text != null) toLines(text) else emptyList()
+            val model = ScreenParser.parse(lines, bmp.width, bmp.height)
+            val sb = StringBuilder("==== STEP ").append(humanTime()).append(" ====\n")
+            sb.append(model.describe()).append("\n--- RAW OCR (").append(lines.size).append(" lines) ---\n")
+            for (l in lines) sb.append(l.box.toShortString()).append(" \"").append(l.text).append("\"\n")
+            saveToFile("step", sb.toString())
+            copyToClipboard(sb.toString())
+            Log.i(TAG, "STEP ${model.kind} lines=${lines.size}")
+        }
     }
 
     // ---------------------------------------------------------------------
     // 截图 + OCR + 解析
     // ---------------------------------------------------------------------
 
-    // 注意：捕获后【不】恢复悬浮球可见，要等点击全部完成(finishStep)才恢复，
-    // 否则点击会落到悬浮球上。
-    private fun captureAndParse(onModel: (ScreenModel?) -> Unit) {
+    /**
+     * 截图+OCR 的统一脚手架：隐藏悬浮球 → 延时 `delayMs`(等球真消失) → 截图 →(可选恢复球)→ OCR，
+     * 回调拿到 `text`(OCR结果) 和 `bmp`(截图)。回调返回后统一 recycle 截图——三个调用方(答题循环/
+     * STEP/OCR 调试)共用，避免重复那段隐藏-延时-截图-回收的样板。
+     *  - `bmp==null`：截图失败；`text==null`：OCR 失败(bmp 仍可用)。
+     *  - `restoreOverlay`：截到图就立刻恢复悬浮球(调试用)；答题循环传 false，留到 finishStep 才恢复
+     *    (否则点击会落到球上)。
+     */
+    private fun captureThenOcr(delayMs: Long, restoreOverlay: Boolean, onResult: (text: Text?, bmp: Bitmap?) -> Unit) {
         overlay.setVisible(false)
-        // 隐藏悬浮球到截图之间的等待，也随速度缩放(留 60ms 下限让它真消失)。
-        val preCapture = (Prefs.stepIntervalMs(this) / 8).coerceIn(60L, 150L)
         mainHandler.postDelayed({
             captureScreen { bmp ->
-                if (bmp == null) { onModel(null); return@captureScreen }
+                if (restoreOverlay) overlay.setVisible(true)
+                if (bmp == null) { onResult(null, null); return@captureScreen }
                 OcrEngine.recognize(bmp) { text ->
-                    val model = if (text == null) null else ScreenParser.parse(toLines(text), bmp.width, bmp.height)
-                    bmp.recycle()   // OCR 完即弃，高频循环下别留给 GC——每张 ~10MB
-                    onModel(model)
+                    try { onResult(text, bmp) } finally { bmp.recycle() }   // OCR 完即弃，每张 ~10MB
                 }
             }
-        }, preCapture)
+        }, delayMs)
+    }
+
+    // 注意：捕获后【不】恢复悬浮球可见，要等点击全部完成(finishStep)才恢复，否则点击会落到球上。
+    private fun captureAndParse(onModel: (ScreenModel?) -> Unit) {
+        // 隐藏悬浮球到截图之间的等待，也随速度缩放(留 60ms 下限让它真消失)。
+        val preCapture = (Prefs.stepIntervalMs(this) / 8).coerceIn(60L, 150L)
+        captureThenOcr(preCapture, restoreOverlay = false) { text, bmp ->
+            onModel(if (bmp == null || text == null) null else ScreenParser.parse(toLines(text), bmp.width, bmp.height))
+        }
     }
 
     /** 一步点击全部完成后调用：恢复悬浮球 + 安排下一步。 */
@@ -524,24 +529,17 @@ class DumpAccessibilityService : AccessibilityService(), OverlayHost {
     // ---------------------------------------------------------------------
 
     private fun ocrDump() {
-        overlay.setVisible(false)
-        mainHandler.postDelayed({
-            captureScreen { bmp ->
-                overlay.setVisible(true)
-                if (bmp == null) { toast("截图失败"); return@captureScreen }
-                OcrEngine.recognize(bmp) { text ->
-                    if (text == null) { toast("OCR失败"); return@recognize }
-                    val sb = StringBuilder("==== OCR ").append(humanTime())
-                        .append(" img=").append(bmp.width).append("x").append(bmp.height).append(" ====\n")
-                    for (b in text.textBlocks) for (l in b.lines)
-                        sb.append("LINE ").append(l.boundingBox?.toShortString() ?: "[?]")
-                            .append(" \"").append(l.text).append("\"\n")
-                    saveToFile("ocr", sb.toString()); copyToClipboard(sb.toString())
-                    toast("OCR 已导出")
-                    bmp.recycle()
-                }
-            }
-        }, 200)
+        captureThenOcr(200, restoreOverlay = true) { text, bmp ->
+            if (bmp == null) { toast("截图失败"); return@captureThenOcr }
+            if (text == null) { toast("OCR失败"); return@captureThenOcr }
+            val sb = StringBuilder("==== OCR ").append(humanTime())
+                .append(" img=").append(bmp.width).append("x").append(bmp.height).append(" ====\n")
+            for (b in text.textBlocks) for (l in b.lines)
+                sb.append("LINE ").append(l.boundingBox?.toShortString() ?: "[?]")
+                    .append(" \"").append(l.text).append("\"\n")
+            saveToFile("ocr", sb.toString()); copyToClipboard(sb.toString())
+            toast("OCR 已导出")
+        }
     }
 
     private fun nodeDump() {
