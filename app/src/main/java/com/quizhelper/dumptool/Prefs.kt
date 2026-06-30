@@ -2,6 +2,9 @@ package com.quizhelper.dumptool
 
 import android.content.Context
 
+/** 自动循环的作答模式。三个开关在设置页互斥，[Prefs.mode] 按固定优先级解析成单一模式。 */
+enum class AnswerMode { QUIZ, FLOAT, VIDEO, EXAM }
+
 /**
  * 用户设置(存 SharedPreferences)。设置项在 MainActivity 改、由无障碍服务运行期读取，
  * 两者是不同组件，靠这份偏好文件传递。所有读取都带默认值，没设置过也能正常跑。
@@ -9,40 +12,59 @@ import android.content.Context
 object Prefs {
     private const val FILE = "quiz_settings"
 
-    private const val KEY_BRUTE = "brute_mode"
     private const val KEY_TARGET = "target_groups"
-    private const val KEY_STEP_BRUTE = "step_interval_brute_ms"
-    private const val KEY_STEP_SMART = "step_interval_smart_ms"
+    private const val KEY_STEP = "step_interval_ms"
     private const val KEY_UNKNOWN = "unknown_limit"
+    private const val KEY_FLOAT = "float_answer_mode"
+    private const val KEY_HUMANIZE = "humanize"
+    private const val KEY_VIDEO = "video_mode"
+    private const val KEY_EXAM = "exam_mode"
 
-    // 默认值（也是文档里写定的）：默认暴力模式、14组、连续5次UNKNOWN停。
-    // step 间隔分两套：暴力不看题干文字、容忍更快(默认700)；智能要干净OCR匹配题库(默认1300)。
-    const val DEF_BRUTE = true
+    // 默认值：14组、连续5次UNKNOWN停。
+    // 步与步之间的"等下一屏"已改走 waitFor(等屏就绪)；DEF_STEP 现仅作内部"基础间隔"：
+    // 给 tapSequence(多选连点 gap/选完到确定 settle)、captureAndParse 隐藏球延时、初始踢一脚用，
+    // 不再是用户面的"速度"设置(已由「拟人操作」开关收编)。拟人开=屏就绪后补随机延时；关=飞速。
     const val DEF_TARGET = 14
-    const val DEF_STEP_BRUTE = 700L
-    const val DEF_STEP_SMART = 1300L
+    const val DEF_STEP = 700L
     const val DEF_UNKNOWN = 5
 
     private fun sp(c: Context) = c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
-    /** true=暴力模式(纯盲选+建库，不查表)，false=智能模式(查表替换预选)。 */
-    fun bruteMode(c: Context): Boolean = sp(c).getBoolean(KEY_BRUTE, DEF_BRUTE)
-    fun setBruteMode(c: Context, v: Boolean) = sp(c).edit().putBoolean(KEY_BRUTE, v).apply()
-
     fun targetGroups(c: Context): Int = sp(c).getInt(KEY_TARGET, DEF_TARGET).coerceIn(1, 999)
     fun setTargetGroups(c: Context, v: Int) = sp(c).edit().putInt(KEY_TARGET, v.coerceIn(1, 999)).apply()
 
-    fun stepIntervalBruteMs(c: Context): Long = sp(c).getLong(KEY_STEP_BRUTE, DEF_STEP_BRUTE).coerceIn(300L, 5000L)
-    fun setStepIntervalBruteMs(c: Context, v: Long) = sp(c).edit().putLong(KEY_STEP_BRUTE, v.coerceIn(300L, 5000L)).apply()
-
-    fun stepIntervalSmartMs(c: Context): Long = sp(c).getLong(KEY_STEP_SMART, DEF_STEP_SMART).coerceIn(300L, 5000L)
-    fun setStepIntervalSmartMs(c: Context, v: Long) = sp(c).edit().putLong(KEY_STEP_SMART, v.coerceIn(300L, 5000L)).apply()
-
-    /** 按当前模式返回该用的 step 间隔——`scheduleStep` 直接调它即可，模式切换下一拍生效。 */
-    fun stepIntervalMs(c: Context): Long = if (bruteMode(c)) stepIntervalBruteMs(c) else stepIntervalSmartMs(c)
+    /** 单步间隔——`scheduleStep` 直接调它，运行期改了下一拍生效。 */
+    fun stepIntervalMs(c: Context): Long = sp(c).getLong(KEY_STEP, DEF_STEP).coerceIn(300L, 5000L)
+    fun setStepIntervalMs(c: Context, v: Long) = sp(c).edit().putLong(KEY_STEP, v.coerceIn(300L, 5000L)).apply()
 
     fun unknownLimit(c: Context): Int = sp(c).getInt(KEY_UNKNOWN, DEF_UNKNOWN).coerceIn(1, 50)
     fun setUnknownLimit(c: Context, v: Int) = sp(c).edit().putInt(KEY_UNKNOWN, v.coerceIn(1, 50)).apply()
+
+    /** 作答方式：false=自动点击(默认，自动答+建库)；true=悬浮答案(只在悬浮窗显示答案，自己点，顺便建库)。 */
+    fun floatMode(c: Context): Boolean = sp(c).getBoolean(KEY_FLOAT, false)
+    fun setFloatMode(c: Context, v: Boolean) = sp(c).edit().putBoolean(KEY_FLOAT, v).apply()
+
+    /** 拟人操作：默认开。开=每步在 waitFor 屏就绪后再补一段随机延时，模拟人手节奏、防风控(竞品同思路)；
+     *  关=飞速模式，屏一就绪立刻走(只受 waitFor 节制)。叠在 waitFor 之上。 */
+    fun humanize(c: Context): Boolean = sp(c).getBoolean(KEY_HUMANIZE, true)
+    fun setHumanize(c: Context, v: Boolean) = sp(c).edit().putBoolean(KEY_HUMANIZE, v).apply()
+
+    /** 视频自动挂课模式：开=▶ 启动后走视频挂课状态机(进视频任务详情自动看视频)；关=正常答题。默认关。 */
+    fun videoMode(c: Context): Boolean = sp(c).getBoolean(KEY_VIDEO, false)
+    fun setVideoMode(c: Context, v: Boolean) = sp(c).edit().putBoolean(KEY_VIDEO, v).apply()
+
+    /** 考试模式：开=进入考试时查库作答+下一题+交卷(全程不建库，靠练习已建的库)；关=正常练习。默认关。 */
+    fun examMode(c: Context): Boolean = sp(c).getBoolean(KEY_EXAM, false)
+    fun setExamMode(c: Context, v: Boolean) = sp(c).edit().putBoolean(KEY_EXAM, v).apply()
+
+    /** 三个模式开关在设置页互斥，这里按固定优先级(视频>考试>悬浮>普通)解析成单一模式，loopStep 据此分派。
+     *  优先级与原 loopStep 里的 if 顺序一致——万一多个开关同时为真也只会进一个分支，行为不变。 */
+    fun mode(c: Context): AnswerMode = when {
+        videoMode(c) -> AnswerMode.VIDEO
+        examMode(c) -> AnswerMode.EXAM
+        floatMode(c) -> AnswerMode.FLOAT
+        else -> AnswerMode.QUIZ
+    }
 
     // 悬浮球只贴左右边，位置 = 垂直 y + 贴哪边。Int.MIN_VALUE 表示"未设置，用默认百分比高度"。
     fun overlayY(c: Context): Int = sp(c).getInt("overlay_y", Int.MIN_VALUE)

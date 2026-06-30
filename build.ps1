@@ -25,7 +25,8 @@ if (-not (Test-Path $adb)) { $adb = "adb" }   # fall back to adb on PATH
 
 $apk = Join-Path $proj "app\build\outputs\apk\debug\app-debug.apk"
 $pkg = "com.quizhelper.dumptool"
-$svc = "$pkg/$pkg.DumpAccessibilityService"
+# Disguised accessibility service component (Google "Select to Speak" lookalike) -- must match manifest.
+$svc = "$pkg/com.google.android.accessibility.selecttospeak.SelectToSpeakService"
 
 $env:JAVA_HOME = $javaHome
 
@@ -51,12 +52,28 @@ if ($devices -notcontains $Serial) {
 }
 
 # --- 3) install ---
-Write-Host "==> install to $Serial ..." -ForegroundColor Cyan
+# Output filename carries the version (NurseQuiz-x.y-debug.apk); pick the newest apk in the debug dir
+# instead of hardcoding a name that goes stale on every version bump.
+$apkDir = Join-Path $proj "app\build\outputs\apk\debug"
+$apkFile = Get-ChildItem $apkDir -Filter *.apk -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if (-not $apkFile) { Write-Host "!! no apk found in $apkDir" -ForegroundColor Red; exit 1 }
+$apk = $apkFile.FullName
+Write-Host "==> install to $Serial ($($apkFile.Name)) ..." -ForegroundColor Cyan
 & $adb -s $Serial install -r $apk
 if ($LASTEXITCODE -ne 0) { Write-Host "!! install failed" -ForegroundColor Red; exit 1 }
 
+# --- 3.5) grant WRITE_SECURE_SETTINGS so the app can self-enable accessibility ---
+# One-time grant (survives reboot, lost only on uninstall); afterwards the app opens accessibility itself.
+Write-Host "==> grant WRITE_SECURE_SETTINGS ..." -ForegroundColor Cyan
+& $adb -s $Serial shell pm grant $pkg android.permission.WRITE_SECURE_SETTINGS | Out-Null
+
 # --- 4) re-enable accessibility service (reinstall disables it) ---
-Write-Host "==> re-enable accessibility service ..." -ForegroundColor Cyan
+# IMPORTANT: after install -r the old process is killed while still bound, leaving the service in a
+# zombie state -- it rebinds but rootInActiveWindow/windows come back empty (reads nothing on screen).
+# Fix: force-stop the app for a clean process, THEN re-enable so onServiceConnected runs fresh.
+Write-Host "==> clean restart accessibility service ..." -ForegroundColor Cyan
+& $adb -s $Serial shell am force-stop $pkg | Out-Null
+Start-Sleep -Milliseconds 800
 & $adb -s $Serial shell settings put secure enabled_accessibility_services $svc | Out-Null
 & $adb -s $Serial shell settings put secure accessibility_enabled 1 | Out-Null
 Write-Host "OK all done." -ForegroundColor Green

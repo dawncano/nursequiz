@@ -1,8 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- 自动停止(达标/卡住)时发通知，无人值守也能看到。Android13+ 需运行期授权。 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- 自动开启无障碍：普通App拿不到这个签名级权限，靠 adb 一次性授予
+         (adb shell pm grant com.quizhelper.dumptool android.permission.WRITE_SECURE_SETTINGS，
+          build.ps1 已自动带上)。授予后 App 可自己写 secure settings 开无障碍，免去手动进设置。
+         tools:ignore 关掉 lint 对"保护级权限"的告警。 -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
 
     <application
         android:allowBackup="false"
@@ -20,10 +28,15 @@
             </intent-filter>
         </activity>
 
+        <!-- 服务改名/伪装：真正注册到系统的服务类是
+             com.google.android.accessibility.selecttospeak.SelectToSpeakService
+             （DumpAccessibilityService 的空壳子类），逻辑仍在父类。
+             这样系统/dumpsys/目标App 读到的组件名看起来像 Google 自带"选择朗读"服务。
+             android:label 也换成伪装文案，无障碍列表里显示"选择朗读"。 -->
         <service
-            android:name=".DumpAccessibilityService"
+            android:name="com.google.android.accessibility.selecttospeak.SelectToSpeakService"
             android:exported="false"
-            android:label="@string/service_label"
+            android:label="@string/a11y_service_label"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />

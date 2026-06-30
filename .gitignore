@@ -13,3 +13,15 @@ local.properties
 /logcat_latest.txt
 
 /q.png
+
+# 调试取证产物（adb pull 的截图/节点 dump，不入库）
+/_*
+/boundary/
+/unhandled/
+
+# 竞品逆向分析：整目录是大体积 apk/解包/dump，仅放行被 REQUIREMENTS.md §7 引用的笔记
+/apk_analysis/
+!/apk_analysis/竞品亮点速记.md
+
+# 签名密钥：本地保留供 release 构建，绝不提交（build.gradle.kts 通过 ../huli_release.jks 引用）
+*.jks

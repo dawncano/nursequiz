@@ -59,6 +59,8 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
-    // 离线中文文字识别（自带模型，无需联网下载）
-    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
+    // 注：已移除 mlkit 文字识别——改用无障碍节点树直读，不再需要截图+OCR。
+
+    // 纯函数单测（无 Android 依赖，跑在本机 JVM）：TextMatch 模糊匹配、NodeParser 时间/字母解析。
+    testImplementation("junit:junit:4.13.2")
 }

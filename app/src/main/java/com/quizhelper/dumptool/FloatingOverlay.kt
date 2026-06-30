@@ -51,6 +51,10 @@ class FloatingOverlay(private val ctx: Context, private val host: OverlayHost) {
     private var closeTargetView: TextView? = null
     private var overClose = false
 
+    // 悬浮答案模式的答案标签（独立小窗，与控制球解耦——控制球会为点击让路而隐藏，答案标签不受影响）。
+    private var answerView: TextView? = null
+    private var answerParams: WindowManager.LayoutParams? = null
+
     private val collapseRunnable = Runnable { collapseToBall() }
 
     private val colorIdle = 0xFF3F51B5.toInt()
@@ -90,18 +94,26 @@ class FloatingOverlay(private val ctx: Context, private val host: OverlayHost) {
             .onFailure { toast("悬浮窗添加失败：${it.message}") }
     }
 
-    /** 移除悬浮球（服务销毁或✕关闭时）。 */
-    fun remove() {
-        cancelCollapse()
-        hideCloseTarget()
+    /** 悬浮答案模式不要大球：只移除/恢复控制球本身（答案小标签独立、不受影响）。
+     *  visible=true 等于 show()；false 只摘掉球，留着答案标签照常显示。 */
+    fun setBallVisible(visible: Boolean) {
+        if (visible) { show(); return }
+        cancelCollapse(); hideCloseTarget()
         root?.let { v -> runCatching { wm.removeView(v) } }
         root = null; params = null; ballView = null
     }
 
-    /**
-     * 截图前隐藏(false)/截图后恢复(true)。隐藏时不仅不可见，还【不拦截触摸】，
-     * 否则点选项/确定会落到悬浮球上。
-     */
+    /** 移除悬浮球（服务销毁或✕关闭时）。 */
+    fun remove() {
+        cancelCollapse()
+        hideCloseTarget()
+        hideAnswer()
+        root?.let { v -> runCatching { wm.removeView(v) } }
+        root = null; params = null; ballView = null
+    }
+
+    /** 把悬浮球设为可点(true)/穿透(false)。只切 FLAG_NOT_TOUCHABLE、不改可见性。
+     *  答题主循环已不再每步调它(球在左边缘、点击在屏幕中部，不重叠，无需藏球)，现仅暂停/停止时用。 */
     fun setVisible(visible: Boolean) {
         val p = params ?: return
         val r = root ?: return
@@ -109,12 +121,76 @@ class FloatingOverlay(private val ctx: Context, private val host: OverlayHost) {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
         else
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-        r.visibility = if (visible) View.VISIBLE else View.INVISIBLE
         runCatching { wm.updateViewLayout(r, p) }
     }
 
     /** 运行态/进度变化后刷新显示（重建当前层级即可）。 */
     fun refresh() = renderLevel()
+
+    /**
+     * 悬浮答案模式：显示/更新答案。切到该模式即显示占位「。。。」，命中后变正确答案原文。空串才隐藏。
+     * 仿竞品 win2：尽量不引人注意——很小、柔和半透明(非黑底)，落在原悬浮球的位置，可拖动。
+     */
+    fun showAnswer(text: String) {
+        handler.post {
+            if (text.isBlank()) { hideAnswer(); return@post }
+            var tv = answerView
+            if (tv == null) {
+                tv = TextView(ctx).apply {
+                    setTextColor(0xFFCCCCCC.toInt())   // 更浅的灰字、无底色，尽量不引人注意
+                    textSize = 11f; gravity = Gravity.CENTER
+                    setShadowLayer(1.5f, 0f, 1f, 0x33000000)   // 极淡阴影，仅保证白底上还认得出(非底色)
+                    setPadding(dp(4), dp(2), dp(4), dp(2)); alpha = 0.95f
+                    maxWidth = dp(132)
+                }
+                // 落在原悬浮球的位置(同一套 Prefs：贴左右边 + 垂直 Y)，让用户一眼认得这就是球变来的。
+                val b = wm.currentWindowMetrics.bounds
+                val savedY = Prefs.overlayY(ctx)
+                val y0 = if (savedY != Int.MIN_VALUE) savedY else (b.height() * 0.15f).toInt()
+                val onRight = Prefs.overlaySideRight(ctx)
+                val lp = WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT
+                ).apply { gravity = Gravity.TOP or (if (onRight) Gravity.RIGHT else Gravity.LEFT); x = dp(4); y = y0 }
+                attachAnswerDrag(tv, lp)
+                answerView = tv; answerParams = lp
+                runCatching { wm.addView(tv, lp) }
+            }
+            tv.text = text
+        }
+    }
+
+    /** 隐藏答案标签（切回自动模式/停止/服务销毁时）。 */
+    fun hideAnswer() {
+        answerView?.let { v -> runCatching { wm.removeView(v) } }
+        answerView = null; answerParams = null
+    }
+
+    /** 防息屏：给悬浮球窗口加/去 FLAG_KEEP_SCREEN_ON（视频挂课时开，保持亮屏，竞品"防息屏"等价）。 */
+    fun setKeepScreenOn(on: Boolean) {
+        handler.post {
+            val p = params ?: return@post
+            val r = root ?: return@post
+            p.flags = if (on) p.flags or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                      else p.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON.inv()
+            runCatching { wm.updateViewLayout(r, p) }
+        }
+    }
+
+    private fun attachAnswerDrag(tv: TextView, lp: WindowManager.LayoutParams) {
+        var ix = 0; var iy = 0; var downX = 0f; var downY = 0f
+        tv.setOnTouchListener { _, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { ix = lp.x; iy = lp.y; downX = e.rawX; downY = e.rawY; true }
+                MotionEvent.ACTION_MOVE -> {
+                    lp.x = ix + (e.rawX - downX).toInt(); lp.y = iy + (e.rawY - downY).toInt()
+                    runCatching { wm.updateViewLayout(tv, lp) }; true
+                }
+                else -> true
+            }
+        }
+    }
 
     fun collapseToBall() { cancelCollapse(); setLevel(Level.BALL) }
 

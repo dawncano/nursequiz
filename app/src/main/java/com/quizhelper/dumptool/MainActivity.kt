@@ -5,6 +5,8 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -27,7 +29,6 @@ class MainActivity : Activity() {
     private lateinit var storageInfo: TextView
     private lateinit var banksContainer: LinearLayout
     private lateinit var settingsContainer: LinearLayout
-    private lateinit var learnContainer: LinearLayout
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -37,13 +38,22 @@ class MainActivity : Activity() {
         storageInfo = findViewById(R.id.storageInfo)
         banksContainer = findViewById(R.id.banksContainer)
         settingsContainer = findViewById(R.id.settingsContainer)
-        learnContainer = findViewById(R.id.learnContainer)
         findViewById<TextView>(R.id.versionText).text = "NurseQuiz v${BuildConfig.VERSION_NAME}"
-        OcrFix.load(this)
-        OcrLearn.init(this)
 
         findViewById<Button>(R.id.openAccessibilityButton).setOnClickListener {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            when {
+                DumpAccessibilityService.isRunning -> toast("无障碍服务已经开启了")
+                // 有 WRITE_SECURE_SETTINGS → App 内直接开，免进系统设置
+                A11yEnabler.enable(this) -> {
+                    toast("已自动开启无障碍服务")
+                    statusText.postDelayed({ refreshStatus() }, 600)  // 等服务绑定后刷新状态
+                }
+                // 没授权 → 退回打开系统设置手动开（保底）
+                else -> {
+                    toast("未授予自助开启权限，转到系统设置手动开启")
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                }
+            }
         }
         findViewById<Button>(R.id.clearTempButton).setOnClickListener {
             AnswerStore.clearTemp(this)
@@ -52,7 +62,13 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.wipeAllButton).setOnClickListener { confirmWipeAll() }
         buildSettings()
         requestNotifyPermissionIfNeeded()
+        // 自动开启无障碍：每次启动若服务没开、且已 adb 授予 WRITE_SECURE_SETTINGS，就静默开起来。
+        // 没授权时 enable() 安全失败、无副作用，用户仍可用上面的按钮（会退回系统设置）。
+        if (!DumpAccessibilityService.isRunning) A11yEnabler.enable(this)
     }
+
+    private fun toast(msg: String) =
+        android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_SHORT).show()
 
     /** Android13+ 发通知要运行期权限——首次进来弹一次，授不授都不影响主流程(通知只是锦上添花)。 */
     private fun requestNotifyPermissionIfNeeded() {
@@ -64,34 +80,86 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 设置区：暴力/智能模式开关 + 目标组数 / step间隔 / UNKNOWN阈值 三个数字输入。
+    /** 三个作答模式（悬浮答案/视频挂课/考试）互斥：开一个就关掉另外两个，避免冲突
+     *  （如悬浮答案+考试同时开、考试优先级更高会抢去自动点击，导致"不显示答案还乱点"）。 */
+    private fun onModeToggle(which: String, checked: Boolean) {
+        when (which) {
+            "float" -> { Prefs.setFloatMode(this, checked); if (checked) { Prefs.setVideoMode(this, false); Prefs.setExamMode(this, false) } }
+            "video" -> { Prefs.setVideoMode(this, checked); if (checked) { Prefs.setFloatMode(this, false); Prefs.setExamMode(this, false) } }
+            "exam"  -> { Prefs.setExamMode(this, checked); if (checked) { Prefs.setFloatMode(this, false); Prefs.setVideoMode(this, false) } }
+        }
+        // 通知服务刷新悬浮形态（悬浮答案=小标签无大球；其余=控制球）。
+        sendBroadcast(Intent("com.quizhelper.dumptool.MODE").setPackage(packageName))
+        if (which == "float") toast(if (checked) "悬浮答案模式：无大球，按【音量+】键开始/结束" else "已退出悬浮答案模式")
+        buildSettings()   // 重建设置区，刷新三个开关的勾选态（互斥结果可见）
+    }
+
+    /** 设置区：作答方式 / 视频挂课 / 考试 / 拟人操作 开关 + 目标组数 / UNKNOWN阈值 / 收回延时 数字输入。
      *  全部即时写入 Prefs，运行中的无障碍服务下一拍就会读到。 */
     private fun buildSettings() {
         settingsContainer.removeAllViews()
 
-        val modeSwitch = Switch(this).apply {
-            text = "暴力模式（关=智能模式）"
+        val floatSwitch = Switch(this).apply {
+            text = "悬浮答案模式（只在悬浮窗提示答案，自己点）"
             textSize = 15f
-            isChecked = Prefs.bruteMode(this@MainActivity)
+            isChecked = Prefs.floatMode(this@MainActivity)
             setPadding(0, 12, 0, 12)
-            setOnCheckedChangeListener { _, checked -> Prefs.setBruteMode(this@MainActivity, checked) }
+            setOnCheckedChangeListener { _, checked -> onModeToggle("float", checked) }
         }
-        settingsContainer.addView(modeSwitch)
+        settingsContainer.addView(floatSwitch)
 
         settingsContainer.addView(TextView(this).apply {
-            text = "暴力=纯盲选+建库不查表；智能=用题库答案替换盲选。建议先暴力跑几遍攒库，再切智能。"
+            text = "关=自动点击：自动答题+建库（用悬浮球▶开始）。开=悬浮答案：进题目时只在小标签显示正确答案、你自己点；" +
+                "此模式【没有大悬浮球】，按手机【音量+】键开始/结束。两种方式都顺便建库。"
             textSize = 12f
-            setPadding(0, 0, 0, 12)
+            setPadding(0, 4, 0, 12)
+        })
+
+        val videoSwitch = Switch(this).apply {
+            text = "视频自动挂课模式"
+            textSize = 15f
+            isChecked = Prefs.videoMode(this@MainActivity)
+            setPadding(0, 12, 0, 12)
+            setOnCheckedChangeListener { _, checked -> onModeToggle("video", checked) }
+        }
+        settingsContainer.addView(videoSwitch)
+        settingsContainer.addView(TextView(this).apply {
+            text = "开：点▶后改为自动看视频——进入视频任务详情页即自动播放、保持亮屏、看完一个换下一个，到95%自动停。开此项时不答题。"
+            textSize = 12f
+            setPadding(0, 4, 0, 12)
+        })
+
+        val examSwitch = Switch(this).apply {
+            text = "考试模式"
+            textSize = 15f
+            isChecked = Prefs.examMode(this@MainActivity)
+            setPadding(0, 12, 0, 12)
+            setOnCheckedChangeListener { _, checked -> onModeToggle("exam", checked) }
+        }
+        settingsContainer.addView(examSwitch)
+        settingsContainer.addView(TextView(this).apply {
+            text = "开：进入考试时自动查题库作答、点下一题、最后交卷（考试无对错反馈，全程不建库，靠练习已建好的库；先把练习刷全再考）。"
+            textSize = 12f
+            setPadding(0, 4, 0, 12)
+        })
+
+        val humanSwitch = Switch(this).apply {
+            text = "拟人操作（推荐开启）"
+            textSize = 15f
+            isChecked = Prefs.humanize(this@MainActivity)
+            setPadding(0, 12, 0, 12)
+            setOnCheckedChangeListener { _, checked -> Prefs.setHumanize(this@MainActivity, checked) }
+        }
+        settingsContainer.addView(humanSwitch)
+        settingsContainer.addView(TextView(this).apply {
+            text = "开（默认）：每题之间补一段随机延时，模拟人手节奏、降低被风控识别的风险。\n" +
+                "关：飞速刷题——屏幕一就绪立刻答下一题，最快但很机械（赶时间临时用，平时建议开）。"
+            textSize = 12f
+            setPadding(0, 4, 0, 12)
         })
 
         settingsContainer.addView(numberRow("目标组数（做满自动停）", Prefs.targetGroups(this).toString()) {
             it.toIntOrNull()?.let { v -> Prefs.setTargetGroups(this, v) }
-        })
-        settingsContainer.addView(numberRow("暴力速度·单步毫秒（小=快，默认700）", Prefs.stepIntervalBruteMs(this).toString()) {
-            it.toLongOrNull()?.let { v -> Prefs.setStepIntervalBruteMs(this, v) }
-        })
-        settingsContainer.addView(numberRow("智能速度·单步毫秒（要干净OCR，默认1300）", Prefs.stepIntervalSmartMs(this).toString()) {
-            it.toLongOrNull()?.let { v -> Prefs.setStepIntervalSmartMs(this, v) }
         })
         settingsContainer.addView(numberRow("连续无法识别多少次就停下", Prefs.unknownLimit(this).toString()) {
             it.toIntOrNull()?.let { v -> Prefs.setUnknownLimit(this, v) }
@@ -126,53 +194,8 @@ class MainActivity : Activity() {
         super.onResume()
         refreshStatus()
         refreshBanks()
-        refreshLearn()
         // 悬浮球若被拖到✕关闭过，打开App时让服务重新唤出（服务没开则无副作用）。
         sendBroadcast(Intent("com.quizhelper.dumptool.SHOW").apply { setPackage(packageName) })
-    }
-
-    /** OCR 等价对候选：列出达标的"老被认混的两个字"，确认→入 ocrfix_user.json，忽略→清掉。 */
-    private fun refreshLearn() {
-        learnContainer.removeAllViews()
-        val cands = OcrLearn.qualifying()
-        if (cands.isEmpty()) {
-            learnContainer.addView(TextView(this).apply {
-                text = "（暂无达标候选。攒够 ${OcrLearn.MIN_TOTAL} 次、且足够稳定才会出现在这里。）"
-                textSize = 13f
-            })
-            return
-        }
-        for (c in cands) {
-            val item = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(0, 10, 0, 10)
-            }
-            // 上下文例句：把例句里的"对/错"两个字都高亮出来，用户一看就懂在替换什么。
-            if (c.example.isNotEmpty()) {
-                item.addView(TextView(this).apply {
-                    textSize = 13f
-                    text = "例：…${c.example}…"
-                })
-            }
-            item.addView(TextView(this).apply {
-                textSize = 15f
-                text = "把「${c.other}」当成「${c.rep}」（更可能对的是「${c.rep}」）　·　${c.count} 次"
-            })
-            val btns = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setPadding(0, 4, 0, 0)
-            }
-            btns.addView(Button(this).apply {
-                text = "确认等价"
-                setOnClickListener { OcrLearn.confirm(c.rep, c.other); refreshLearn() }
-            })
-            btns.addView(Button(this).apply {
-                text = "忽略"
-                setOnClickListener { OcrLearn.dismiss(c.rep, c.other); refreshLearn() }
-            })
-            item.addView(btns)
-            learnContainer.addView(item)
-        }
     }
 
     private fun refreshStatus() {
@@ -215,8 +238,8 @@ class MainActivity : Activity() {
         val info = TextView(this).apply {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             textSize = 14f
-            val title = OcrFix.fix(b.title).replace("|", "").ifEmpty { "(未命名)" }
-            val proj = OcrFix.fix(b.project).replace("|", "")
+            val title = b.title.trim().ifEmpty { "(未命名)" }
+            val proj = b.project.trim()
             text = "$title\n$proj　·　已记 ${b.count} 题　·　${b.sizeBytes / 1024}KB"
         }
         // 展开/收起：展开后列出该库所有"题干→答案"条目，可改可删。
@@ -250,55 +273,123 @@ class MainActivity : Activity() {
         return wrap
     }
 
-    /** 把题库的每条"题干 → 答案"渲染成可编辑行：答案 EditText 失焦保存，✕ 删除。 */
+    /** 展开题库（仿竞品题库 tab）：搜索框(空=最近10条) + 结果列表；点条目弹"修正题目"框(改题干/答案/删除)。
+     *  不一股脑列全部——题库大了几百条没法看；默认只给最近入库的 10 条，要找具体题就搜。 */
     private fun fillEntries(container: LinearLayout, b: BankInfo) {
         container.removeAllViews()
-        val map = AnswerStore.loadEntries(b.file)
-        if (map.isEmpty()) {
+        val all = AnswerStore.loadEntries(b.file).toList()   // LinkedHashMap→插入顺序, 末尾=最近入库
+        if (all.isEmpty()) {
             container.addView(TextView(this).apply { text = "（这个题库还没有条目）"; textSize = 13f })
             return
         }
-        for ((question, letters) in map) {
-            val item = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, 6, 0, 6)
+        val hintTv = TextView(this).apply { textSize = 12f; setPadding(0, 4, 0, 4) }
+        val results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        fun render(query: String) {
+            results.removeAllViews()
+            val q = query.trim()
+            val matched: List<Pair<String, String>>
+            if (q.isEmpty()) {
+                matched = all.takeLast(10).reversed()   // 最近10条，最新在最上
+                hintTv.text = "共 ${all.size} 题 · 显示最近入库 10 条（输入关键字搜索全部）"
+            } else {
+                // 模糊搜索：按空格拆词，题干或答案里都包含(忽略大小写)才算命中(竞品的 LIKE 等价)。
+                val tokens = q.lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+                val hits = all.filter { (question, ans) ->
+                    val hay = (question + " " + ans).lowercase()
+                    tokens.all { hay.contains(it) }
+                }
+                matched = hits.takeLast(50).reversed()
+                hintTv.text = "命中 ${hits.size} 题" + if (hits.size > 50) "（只显示最近 50）" else ""
             }
-            item.addView(TextView(this).apply {
+            if (matched.isEmpty()) {
+                results.addView(TextView(this).apply { text = "（没有匹配的题）"; textSize = 12f })
+                return
+            }
+            for ((question, letters) in matched) results.addView(buildEntryRow(container, b, question, letters))
+        }
+
+        val search = EditText(this).apply {
+            hint = "搜索题目/答案（空=最近10条）"
+            textSize = 13f
+            inputType = InputType.TYPE_CLASS_TEXT
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, a: Int, c: Int, d: Int) {}
+                override fun onTextChanged(s: CharSequence?, a: Int, c: Int, d: Int) {}
+                override fun afterTextChanged(s: Editable?) { render(s?.toString() ?: "") }
+            })
+        }
+        container.addView(search)
+        container.addView(hintTv)
+        container.addView(results)
+        render("")
+    }
+
+    /** 一条题库记录行：题干预览 + 答案，点一下弹修正框。 */
+    private fun buildEntryRow(container: LinearLayout, b: BankInfo, question: String, letters: String): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 8, 0, 8)
+            addView(TextView(this@MainActivity).apply {
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 textSize = 12f
-                text = if (question.length > 40) question.take(40) + "…" else question
+                text = if (question.length > 38) question.take(38) + "…" else question
             })
-            item.addView(EditText(this).apply {
-                layoutParams = LinearLayout.LayoutParams(150, ViewGroup.LayoutParams.WRAP_CONTENT)
-                inputType = InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
-                setText(letters)
-                setOnFocusChangeListener { _, hasFocus ->
-                    if (!hasFocus) {
-                        val v = text.toString().uppercase().filter { it in 'A'..'E' }
-                        if (v.isNotEmpty()) AnswerStore.saveEntry(b.file, question, v)
-                    }
-                }
+            addView(TextView(this@MainActivity).apply {
+                text = letters; textSize = 15f; setPadding(20, 0, 8, 0)
             })
-            item.addView(Button(this).apply {
-                text = "✕"
-                setOnClickListener {
-                    AnswerStore.deleteEntry(b.file, question)
-                    fillEntries(container, b)   // 重新渲染
-                }
-            })
-            container.addView(item)
+            setOnClickListener { showEditEntryDialog(container, b, question, letters) }
         }
+    }
+
+    /** 修正题目：弹框可改题干(多行)+答案，或删除。改完只刷新本题库展开区(保持展开态)。 */
+    private fun showEditEntryDialog(container: LinearLayout, b: BankInfo, oldQuestion: String, letters: String) {
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad / 2, pad, 0) }
+        val qEdit = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            textSize = 13f
+            setText(oldQuestion)
+        }
+        val aEdit = EditText(this).apply {
+            inputType = InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+            hint = "答案 如 C 或 ABD"
+            setText(letters)
+        }
+        box.addView(TextView(this).apply { text = "题目"; textSize = 12f })
+        box.addView(qEdit)
+        box.addView(TextView(this).apply { text = "答案"; textSize = 12f; setPadding(0, pad / 2, 0, 0) })
+        box.addView(aEdit)
+        AlertDialog.Builder(this)
+            .setTitle("修正题目")
+            .setView(box)
+            .setNeutralButton("删除") { _, _ ->
+                AnswerStore.deleteEntry(b.file, oldQuestion)
+                fillEntries(container, b)
+            }
+            .setNegativeButton("取消", null)
+            .setPositiveButton("保存") { _, _ ->
+                val newQ = qEdit.text.toString().trim()
+                val ans = aEdit.text.toString().uppercase().filter { it in 'A'..'E' }
+                if (ans.isEmpty()) {
+                    toast("答案要填 A-E（如 C 或 ABD）")
+                } else {
+                    AnswerStore.editEntry(b.file, oldQuestion, newQ, ans)
+                    fillEntries(container, b)
+                }
+            }
+            .show()
     }
 
     private fun confirmWipeAll() {
         AlertDialog.Builder(this)
             .setTitle("清空所有数据")
-            .setMessage("会删除：全部题库答案、临时文件、OCR 学得表/候选、所有设置（恢复默认）。不可恢复，确定？")
+            .setMessage("会删除：全部题库答案、临时文件、所有设置（恢复默认）。不可恢复，确定？")
             .setNegativeButton("取消", null)
             .setPositiveButton("全部清空") { _, _ ->
                 AnswerStore.wipeAllData(this)
-                refreshStatus(); refreshBanks(); refreshLearn(); buildSettings()
+                refreshStatus(); refreshBanks(); buildSettings()
             }
             .show()
     }
