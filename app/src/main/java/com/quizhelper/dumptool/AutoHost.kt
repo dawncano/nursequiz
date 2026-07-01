@@ -43,4 +43,19 @@ interface AutoHost {
 
     /** 已答题计数 +1（停止时的汇总用）。 */
     fun incAnswered()
+
+    /** 已完成组数（悬浮球进度显示 + 停止汇总；答题机每完成一组 ++）。跨切面状态，故留在 Service。 */
+    var groupsDone: Int
+
+    /** 本次运行目标组数（达到即自动停止）。 */
+    val targetGroups: Int
+
+    /** 连续 UNKNOWN 上限（超过则停止等人工），从 Prefs 读。 */
+    fun unknownLimit(): Int
+
+    /** 清空调试临时文件目录 dumps/。 */
+    fun clearDumps()
+
+    /** UNKNOWN 帧把疑似未适配题型的节点树 dump 到 unhandled/（同屏去重，写文件需 Context 故留在 Service）。 */
+    fun captureUnhandled()
 }
