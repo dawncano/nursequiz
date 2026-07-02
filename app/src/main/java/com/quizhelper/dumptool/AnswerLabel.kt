@@ -9,6 +9,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.WindowManager
 import android.widget.TextView
+import kotlin.math.abs
 
 /**
  * 悬浮答案小标签：浅灰小字、无底色、极淡阴影，落在原悬浮球位置(同一套 Prefs 的贴边+Y)，可拖动。
@@ -89,15 +90,20 @@ class AnswerLabel(
                 override fun onDoubleTap(e: MotionEvent): Boolean { cb(); return true }
             })
         }
-        var ix = 0; var iy = 0; var downX = 0f; var downY = 0f
+        var ix = 0; var iy = 0; var downX = 0f; var downY = 0f; var moved = false
+        val slop = dp(6)
         tv.setOnTouchListener { _, e ->
             gd?.onTouchEvent(e)
             when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { ix = p.x; iy = p.y; downX = e.rawX; downY = e.rawY }
+                MotionEvent.ACTION_DOWN -> { ix = p.x; iy = p.y; downX = e.rawX; downY = e.rawY; moved = false }
                 MotionEvent.ACTION_MOVE -> {
                     p.x = ix + (e.rawX - downX).toInt(); p.y = iy + (e.rawY - downY).toInt()
+                    if (abs(e.rawX - downX) > slop || abs(e.rawY - downY) > slop) moved = true
                     runCatching { wm.updateViewLayout(tv, p) }
                 }
+                // 拖动后记住位置：与控制球共用 Prefs 的 Y+贴边，下次(球或标签)从这儿出现。
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                    if (moved) Prefs.setOverlayPos(ctx, p.y, Prefs.overlaySideRight(ctx))
             }
             true
         }
