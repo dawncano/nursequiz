@@ -128,8 +128,7 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
     override fun onKeyEvent(event: KeyEvent): Boolean {
         if (event.keyCode != KeyEvent.KEYCODE_VOLUME_UP) return super.onKeyEvent(event)
         if (Prefs.examMode(this)) {
-            if (event.action == KeyEvent.ACTION_DOWN)
-                sendBroadcast(Intent(ExamOverlayService.ACTION_TOGGLE).setPackage(packageName))
+            if (event.action == KeyEvent.ACTION_DOWN) ExamOverlayService.toggle(this)
             return true
         }
         if (Prefs.floatMode(this)) {
@@ -342,11 +341,8 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
     override fun captureUnhandled() { captureIfUnhandledQuestion() }
     /** 显示答案：考试模式(错峰、无障碍随时会被关)走独立前台服务的浮窗；其余走无障碍 overlay。 */
     override fun showAnswer(text: String) {
-        if (Prefs.examMode(this))
-            sendBroadcast(Intent(ExamOverlayService.ACTION_ANSWER).setPackage(packageName)
-                .putExtra(ExamOverlayService.EXTRA_TEXT, text))
-        else
-            overlay.showAnswer(text)
+        if (Prefs.examMode(this)) ExamOverlayService.showAnswer(this, text)
+        else overlay.showAnswer(text)
     }
 
     /** 依次点击多个坐标（多选题用），点完回调。

@@ -100,7 +100,6 @@ class MainActivity : Activity() {
     /** 按当前 examMode 启停 [ExamOverlayService]。开考试模式需悬浮窗权限(TYPE_APPLICATION_OVERLAY)：
      *  没授予则引导去系统设置并回退开关(避免服务起来加不了浮窗)。关考试模式则停服务(其 onDestroy 恢复无障碍)。 */
     private fun syncExamService() {
-        val svc = Intent(this, ExamOverlayService::class.java)
         if (Prefs.examMode(this)) {
             if (!Settings.canDrawOverlays(this)) {
                 Prefs.setExamMode(this, false)   // 回退，待授权后再开
@@ -108,9 +107,9 @@ class MainActivity : Activity() {
                 startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
                 return
             }
-            startForegroundService(svc)
+            ExamOverlayService.start(this)
         } else {
-            stopService(svc)
+            ExamOverlayService.stop(this)
         }
     }
 

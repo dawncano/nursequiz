@@ -37,12 +37,23 @@ class ExamOverlayService : Service() {
 
     companion object {
         private const val TAG = "DumpTool"
-        const val ACTION_ANSWER = "com.quizhelper.dumptool.EXAM_ANSWER"   // 无障碍→本服务：显示答案
-        const val ACTION_TOGGLE = "com.quizhelper.dumptool.EXAM_TOGGLE"   // 无障碍→本服务：隐/显浮窗
-        const val EXTRA_TEXT = "text"
+        private const val ACTION_ANSWER = "com.quizhelper.dumptool.EXAM_ANSWER"   // 无障碍→本服务：显示答案
+        private const val ACTION_TOGGLE = "com.quizhelper.dumptool.EXAM_TOGGLE"   // 无障碍→本服务：隐/显浮窗
+        private const val EXTRA_TEXT = "text"
         private const val CH_ID = "quiz_exam_overlay"
         private const val NOTIF_ID = 1002
         private const val PLACEHOLDER = "。。。"
+
+        // ---- 考试浮窗的对外控制面：其余组件不再直接拼 Intent，只走这几个方法（IPC 协议收在本服务内）。----
+        /** 启动考试浮窗前台服务（onCreate 会自动关无障碍；调用方须先自查悬浮窗权限）。 */
+        fun start(ctx: Context) { ctx.startForegroundService(Intent(ctx, ExamOverlayService::class.java)) }
+        /** 停止（onDestroy 会恢复开启无障碍）。 */
+        fun stop(ctx: Context) { ctx.stopService(Intent(ctx, ExamOverlayService::class.java)) }
+        /** 无障碍服务读到答案后送来显示到浮窗。 */
+        fun showAnswer(ctx: Context, text: String) =
+            ctx.sendBroadcast(Intent(ACTION_ANSWER).setPackage(ctx.packageName).putExtra(EXTRA_TEXT, text))
+        /** 音量+：隐/显浮窗（遮答案）。 */
+        fun toggle(ctx: Context) = ctx.sendBroadcast(Intent(ACTION_TOGGLE).setPackage(ctx.packageName))
     }
 
     private val handler = Handler(Looper.getMainLooper())
