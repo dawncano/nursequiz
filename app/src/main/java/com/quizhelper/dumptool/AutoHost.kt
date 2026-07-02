@@ -58,4 +58,7 @@ interface AutoHost {
 
     /** UNKNOWN 帧把疑似未适配题型的节点树 dump 到 unhandled/（同屏去重，写文件需 Context 故留在 Service）。 */
     fun captureUnhandled()
+
+    /** 考试模式：把读到的答案原文广播给 [ExamOverlayService] 显示（发广播需 Context 故留在 Service）。 */
+    fun broadcastExamAnswer(text: String)
 }

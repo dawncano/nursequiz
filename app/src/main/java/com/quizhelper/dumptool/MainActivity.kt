@@ -3,6 +3,7 @@ package com.quizhelper.dumptool
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.text.Editable
@@ -88,10 +89,29 @@ class MainActivity : Activity() {
             "video" -> { Prefs.setVideoMode(this, checked); if (checked) { Prefs.setFloatMode(this, false); Prefs.setExamMode(this, false) } }
             "exam"  -> { Prefs.setExamMode(this, checked); if (checked) { Prefs.setFloatMode(this, false); Prefs.setVideoMode(this, false) } }
         }
+        // 考试模式(错峰)靠独立前台服务 ExamOverlayService 托管浮窗+关无障碍，需按当前 examMode 启停。
+        syncExamService()
         // 通知服务刷新悬浮形态（悬浮答案=小标签无大球；其余=控制球）。
         sendBroadcast(Intent("com.quizhelper.dumptool.MODE").setPackage(packageName))
         if (which == "float") toast(if (checked) "悬浮答案模式：无大球，按【音量+】键开始/结束" else "已退出悬浮答案模式")
         buildSettings()   // 重建设置区，刷新三个开关的勾选态（互斥结果可见）
+    }
+
+    /** 按当前 examMode 启停 [ExamOverlayService]。开考试模式需悬浮窗权限(TYPE_APPLICATION_OVERLAY)：
+     *  没授予则引导去系统设置并回退开关(避免服务起来加不了浮窗)。关考试模式则停服务(其 onDestroy 恢复无障碍)。 */
+    private fun syncExamService() {
+        val svc = Intent(this, ExamOverlayService::class.java)
+        if (Prefs.examMode(this)) {
+            if (!Settings.canDrawOverlays(this)) {
+                Prefs.setExamMode(this, false)   // 回退，待授权后再开
+                toast("考试模式需要悬浮窗权限，请授予后重新开启考试模式")
+                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                return
+            }
+            startForegroundService(svc)
+        } else {
+            stopService(svc)
+        }
     }
 
     /** 设置区：作答方式 / 视频挂课 / 考试 / 拟人操作 开关 + 目标组数 / UNKNOWN阈值 / 收回延时 数字输入。

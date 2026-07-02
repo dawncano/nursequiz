@@ -3,50 +3,44 @@ package com.quizhelper.dumptool
 import android.util.Log
 
 /**
- * 考试模式（5.16，与竞品一致）：考试无逐题反馈→不建库，靠练习已建的库作答。
- * 每屏：查库(命中)/盲选A/AI → 选选项 → 点确定(若有)或下一题推进 → 末题点交卷+确认 → 停。
- * 复用 waitFor(host.scheduleNextStep)：每屏只作答一次，等切到下一题再继续。
+ * 考试模式（错峰 + 只显示答案，见 REQUIREMENTS 5.8 / 反作弊逆向见 2.3）。
  *
- * 从 [DumpAccessibilityService] 原样抽出，行为不变。结构为"竞品逻辑+练习页"的待校准骨架
- * （详见 REQUIREMENTS 5.16），独立成类后将来校准只动本文件。
+ * 【绝不自动点、绝不建库】——护理助手考试页一刀切检测无障碍，自动答题必被拦；且考试只 1 次机会，
+ * 不容许乱点。本机只做：读考试页题目 → 跨所有题库搜答案 → AI 兜底 → 都没有则 unknown →
+ * 把答案原文【广播】给 [ExamOverlayService] 显示在浮窗上，用户自己点。
+ *
+ * 与悬浮答案模式(FloatMachine)的区别：① 答案来自 `store.searchAll`（跨所有库，考试题库常没单独刷过）；
+ * ② 答案显示在独立前台服务的浮窗(错峰时无障碍会被关、其 overlay 会消失，故不能用无障碍的浮窗)。
  */
 class ExamMachine(private val host: AutoHost) {
 
+    private var lastShown = ""   // 去重：同一屏(同题)已显示过就不重复广播
+
     fun step() {
-        if (!host.active) return
         val em = runCatching { NodeParser.toExamModel(host.targetRoot()) }
             .onFailure { Log.e(TAG, "exam parse fail", it) }.getOrNull()
         if (em == null) { host.scheduleNextStep(); return }
-        host.markStepSigNow()   // 复用 waitFor：屏(题)变了才走下一步，避免同题重复作答
+        host.markStepSigNow()   // 复用 waitFor：屏(题)变了才走下一拍，避免同题反复搜索
         act(em)
     }
 
     private fun act(em: ExamModel) {
-        // 交卷确认弹窗 → 确定 → 交卷完成，停。
-        if (em.dialogConfirm != null) {
-            host.tap(em.dialogConfirm)
-            Log.i(TAG, "EXAM 交卷确认 -> 确定")
-            host.stopAuto("已交卷")
-            return
+        if (em.options.isNotEmpty() && em.questionText.isNotBlank()) {
+            // 跨所有题库搜答案 → AI 兜底 → 都没有则 unknown。全程不点、不建库。
+            val known = host.store.searchAll(em.questionText)
+                ?: AiHook.resolve(em.questionText, em.optionTexts)
+            val show = known?.replace("|", "  ") ?: "unknown"   // 多选竖线→空格，显示原文
+            if (show != lastShown) {
+                lastShown = show
+                host.broadcastExamAnswer(show)
+                host.incAnswered()
+                Log.i(TAG, "EXAM q='${em.questionText.take(16)}' show=$show known=${known != null}")
+            }
         }
-        if (em.options.isNotEmpty()) {
-            // 查库命中→选库；没命中→AI→盲选 A。考试不建库。
-            val stored = host.store.get(em.questionText) ?: AiHook.resolve(em.questionText, em.optionTexts)
-            val idx = if (stored != null) AnswerCodec.textsToIdx(stored, em.optionTexts).ifEmpty { listOf(0) } else listOf(0)
-            val pts = idx.mapNotNull { em.options.getOrNull(it) }.ifEmpty { listOf(em.options[0]) }
-            val advance = em.confirm ?: em.nextBtn ?: em.submitBtn   // 确定优先→下一题→末题交卷
-            host.incAnswered()
-            Log.i(TAG, "EXAM 作答 q='${em.questionText.take(16)}' idx=$idx known=${stored != null}")
-            host.tapSequence(pts) { advance?.let { host.tap(it) }; host.scheduleNextStep() }
-            return
-        }
-        // 没读到题：有交卷就交卷；否则可能已交完/异常，关掉疑似弹窗后继续观察。
-        when {
-            em.submitBtn != null -> { host.tap(em.submitBtn); Log.i(TAG, "EXAM 无题, 点交卷"); host.scheduleNextStep() }
-            em.dismissBtn != null -> { host.tap(em.dismissBtn); host.scheduleNextStep() }
-            else -> host.scheduleNextStep()
-        }
+        host.scheduleNextStep()   // 用户翻到下一题(屏变了)就尽快更新浮窗
     }
+
+    fun reset() { lastShown = "" }
 
     companion object { private const val TAG = "DumpTool" }
 }

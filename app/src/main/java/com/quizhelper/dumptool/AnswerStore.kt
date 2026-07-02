@@ -72,6 +72,9 @@ class AnswerStore(private val context: Context) {
     /** 给外部(失败计数等)用的稳定题干key，复用与 get() 相同的模糊归并逻辑，只读不登记。 */
     fun keyFor(question: String): String? = canonical(question, addIfNew = false)
 
+    /** 跨【所有】题库查答案（考试模式用，不限当前库）。委托到 [searchAllBanks]。 */
+    fun searchAll(question: String): String? = searchAllBanks(context, question)
+
     /** 记入正确答案并立即落盘。 */
     fun put(question: String, letters: String) {
         if (letters.isEmpty()) return
@@ -201,6 +204,26 @@ class AnswerStore(private val context: Context) {
         fun wipeAllData(context: Context) {
             runCatching { context.getExternalFilesDir(null)?.deleteRecursively() }
             Prefs.clearAll(context)
+        }
+
+        /** 跨【所有】题库搜答案（考试模式用：考试题库可能没单独刷过，不能只查当前库）。
+         *  返回存档的答案原文（选项文字，多选竖线分隔），没有则 null。逻辑与实例 `get()` 一致：
+         *  归一化题干后先找精确命中(O(1))，否则对全部库逐题算相似度取最像的，≥simThreshold 才认。
+         *  库总量百~千条量级，考试每题查一次可接受。 */
+        fun searchAllBanks(context: Context, question: String): String? {
+            val norm = TextMatch.normalize(question)
+            if (norm.isEmpty()) return null
+            var best: String? = null
+            var bestSim = 0.0
+            for (bank in listBanks(context)) {
+                val entries = loadEntries(bank.file)   // 键在写库时已归一化，可直接比
+                entries[norm]?.let { return it }       // 精确命中，立即返回
+                for ((k, ans) in entries) {
+                    val sim = TextMatch.similarity(norm, k)
+                    if (sim > bestSim) { bestSim = sim; best = ans }
+                }
+            }
+            return if (bestSim >= 0.82) best else null   // 阈值同实例 simThreshold
         }
 
         // --- 题库条目的查看/修正(供 MainActivity 6.8 用)。直接读写题库 JSON，

@@ -80,7 +80,12 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
                 }
                 "com.quizhelper.dumptool.STOP" -> stopAuto("广播停止")
                 "com.quizhelper.dumptool.SHOW" -> applyOverlayMode()   // 球被拖到✕关闭后，打开App重新唤出
-                "com.quizhelper.dumptool.MODE" -> applyOverlayMode()   // 设置页切了作答方式→刷新球的显隐
+                "com.quizhelper.dumptool.MODE" -> {
+                    // 切作答方式时若正在自动跑(如考试只读循环/悬浮)，先停——否则关掉考试模式后
+                    // loopStep 会按新 mode 落到普通答题分支、开始【自动点击】，很危险。
+                    if (auto) stopAuto("切换作答方式")
+                    applyOverlayMode()
+                }
                 "com.quizhelper.dumptool.NODES" -> nodeDump()
                 "com.quizhelper.dumptool.NODEQ" -> nodeQuestionDump()
             }
@@ -107,18 +112,28 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
             addAction("com.quizhelper.dumptool.NODEQ")
         }
         ContextCompat.registerReceiver(this, cmdReceiver, filter, ContextCompat.RECEIVER_EXPORTED)
+        // 考试模式(错峰)：无障碍是被 ExamOverlayService 在用户双击「。。。」后自动开起来的，
+        // 这次重连 = 用户已发出"开始"信号 → 自动起只读循环(读题跨库搜答案广播给浮窗)，无需点悬浮球。
+        if (Prefs.examMode(this)) { startAuto(); return }
         toast("自动答题服务已开启")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
     override fun onInterrupt() {}
 
-    /** 悬浮答案模式没有大球：音量+键 = 开始/结束（竞品同款隐蔽触发）。仅此模式拦截，不影响平时调音量。 */
+    /** 音量+键的隐蔽触发（竞品同款）：
+     *  - 悬浮答案模式：开始/结束自动循环；
+     *  - 考试模式：隐藏/显示考试浮窗（广播给 ExamOverlayService，遮答案用，不改音量）。
+     *  仅这两模式拦截，不影响平时调音量。 */
     override fun onKeyEvent(event: KeyEvent): Boolean {
-        if (Prefs.floatMode(this) && event.keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
-            if (event.action == KeyEvent.ACTION_DOWN) {
-                if (auto) stopAuto("音量键停止") else startAuto()
-            }
+        if (event.keyCode != KeyEvent.KEYCODE_VOLUME_UP) return super.onKeyEvent(event)
+        if (Prefs.examMode(this)) {
+            if (event.action == KeyEvent.ACTION_DOWN)
+                sendBroadcast(Intent(ExamOverlayService.ACTION_TOGGLE).setPackage(packageName))
+            return true
+        }
+        if (Prefs.floatMode(this)) {
+            if (event.action == KeyEvent.ACTION_DOWN) { if (auto) stopAuto("音量键停止") else startAuto() }
             return true   // 消费掉，避免误改音量
         }
         return super.onKeyEvent(event)
@@ -128,6 +143,8 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
      *  小答案标签、立刻显「。。。」占位(让用户知道已切换成功)；其余模式显示控制球、撤掉标签。 */
     private fun applyOverlayMode() {
         if (!::overlay.isInitialized) return
+        // 考试模式：可见 UI 全交给 ExamOverlayService(独立浮窗)，本无障碍服务不显任何浮窗。
+        if (Prefs.examMode(this)) { overlay.setBallVisible(false); overlay.hideAnswer(); return }
         val float = Prefs.floatMode(this)
         overlay.setBallVisible(!float)
         if (float) overlay.showAnswer("。。。") else overlay.hideAnswer()
@@ -202,11 +219,13 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
         quizMachine.reset()
         videoMachine.reset()
         floatMachine.reset()
+        examMachine.reset()
         overlay.refresh()
         val videoMode = Prefs.videoMode(this)
         overlay.setKeepScreenOn(videoMode)   // 视频挂课防息屏
         toast(when {
             videoMode -> "视频自动挂课：进视频任务详情即自动观看"
+            Prefs.examMode(this) -> "考试模式：读到题目会在浮窗显示答案，音量+隐/显"
             Prefs.floatMode(this) -> "悬浮答案模式：进题目会显示答案，自己点"
             else -> "开始自动答题，目标 $targetGroups 组"
         })
@@ -321,6 +340,10 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
     override fun incAnswered() { answered++ }
     override fun unknownLimit(): Int = Prefs.unknownLimit(this)
     override fun captureUnhandled() { captureIfUnhandledQuestion() }
+    override fun broadcastExamAnswer(text: String) {
+        sendBroadcast(Intent(ExamOverlayService.ACTION_ANSWER).setPackage(packageName)
+            .putExtra(ExamOverlayService.EXTRA_TEXT, text))
+    }
 
     /** 依次点击多个坐标（多选题用），点完回调。
      *  点击间隔/选完到点确定的等待都按当前速度(stepInterval)成比例缩放——
