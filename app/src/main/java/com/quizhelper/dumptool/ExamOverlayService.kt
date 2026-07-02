@@ -54,7 +54,6 @@ class ExamOverlayService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var wm: WindowManager
     private var label: TextView? = null
-    private var params: WindowManager.LayoutParams? = null
     private var armed = false     // 是否已双击开始(开无障碍后)
     private var hidden = false    // 音量+切换的隐/显态
 
@@ -141,7 +140,7 @@ class ExamOverlayService : Service() {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT
         ).apply { gravity = Gravity.TOP or (if (onRight) Gravity.RIGHT else Gravity.LEFT); x = dp(4); y = y0 }
         attachTouch(tv, lp)
-        label = tv; params = lp
+        label = tv
         runCatching { wm.addView(tv, lp) }
             .onFailure { toast("考试浮窗添加失败：${it.message}") }
     }
@@ -150,7 +149,7 @@ class ExamOverlayService : Service() {
 
     private fun removeLabel() {
         label?.let { v -> runCatching { wm.removeView(v) } }
-        label = null; params = null
+        label = null
     }
 
     /** 音量+：隐藏/显示浮窗(遮答案，不引人注意)。用穿透+透明切换，保留窗口以便再显示。 */

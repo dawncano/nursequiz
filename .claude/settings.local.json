@@ -6,7 +6,19 @@
       "PowerShell($v = & python --version 2>$null; Write-Output \"python: $v\"; Get-ChildItem 'D:\\\\software' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)",
       "PowerShell($adb=\"D:\\\\software\\\\Android\\\\Sdk\\\\platform-tools\\\\adb.exe\"; $svc=\"com.quizhelper.dumptool/com.quizhelper.dumptool.DumpAccessibilityService\"; & $adb shell settings put secure accessibility_enabled 0; Start-Sleep -Seconds 1; & $adb shell settings put secure enabled_accessibility_services $svc; & $adb shell settings put secure accessibility_enabled 1; Start-Sleep -Seconds 3; \"=== 服务进程 ===\"; & $adb shell \"ps -A | grep quizhelper\"; \"=== 无障碍启用值 ===\"; & $adb shell \"settings get secure enabled_accessibility_services\")",
       "Bash(ls -R app/src/test)",
-      "Bash(ls -R app/src/androidTest)"
+      "Bash(ls -R app/src/androidTest)",
+      "PowerShell($adb=\"D:\\\\software\\\\Android\\\\Sdk\\\\platform-tools\\\\adb.exe\"; & $adb -s 564e42ec shell appops set com.quizhelper.dumptool SYSTEM_ALERT_WINDOW allow; if\\($?\\){ \"overlay permission granted\" }; & $adb -s 564e42ec shell dumpsys package com.quizhelper.dumptool | Select-String \"SYSTEM_ALERT_WINDOW\")",
+      "PowerShell($adb=\"D:\\\\software\\\\Android\\\\Sdk\\\\platform-tools\\\\adb.exe\"; & $adb -s 564e42ec shell appops get com.quizhelper.dumptool SYSTEM_ALERT_WINDOW)",
+      "PowerShell(claude plugin marketplace --help 2>&1)",
+      "PowerShell(claude plugin install --help 2>&1)",
+      "PowerShell(\"----INSTALL----\")",
+      "PowerShell(claude plugin marketplace add obra/superpowers-marketplace 2>&1)",
+      "PowerShell(claude plugin marketplace add anthropics/claude-code 2>&1)",
+      "PowerShell(claude plugin marketplace list 2>&1)",
+      "PowerShell(Get-ChildItem -Path \"$env:USERPROFILE\\\\.claude\" -Recurse -Filter \"marketplace.json\" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)",
+      "PowerShell(claude plugin install firecrawl@firecrawl --scope user 2>&1)",
+      "PowerShell(claude plugin list 2>&1)",
+      "PowerShell(claude plugin uninstall firecrawl@firecrawl 2>&1)"
     ]
   }
 }

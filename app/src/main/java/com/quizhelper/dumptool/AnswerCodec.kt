@@ -9,6 +9,10 @@ object AnswerCodec {
     fun idxToLetters(idx: List<Int>): String =
         idx.sorted().joinToString("") { ('A' + it).toString() }
 
+    /** 答案原文 → 浮窗显示文本：多选竖线换双空格；空/未查到显示占位 "unknown"。悬浮/考试模式共用。 */
+    fun forDisplay(answer: String?): String =
+        answer?.takeIf { it.isNotEmpty() }?.replace("|", "  ") ?: "unknown"
+
     /** 存档的“正确答案文字”(多选用 | 分隔)在当前选项文字里找下标：精确优先，再退包含匹配容错。
      *  存文字而非字母 → 选项乱序也能按内容点对；匹配不上(旧字母数据/选项变了)返回空，调用方退回盲选。 */
     fun textsToIdx(stored: String, optionTexts: List<String>): List<Int> =

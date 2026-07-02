@@ -29,7 +29,7 @@ class ExamMachine(private val host: AutoHost) {
             // 跨所有题库搜答案 → AI 兜底 → 都没有则 unknown。全程不点、不建库。
             val known = host.store.searchAll(em.questionText)
                 ?: AiHook.resolve(em.questionText, em.optionTexts)
-            val show = known?.replace("|", "  ") ?: "unknown"   // 多选竖线→空格，显示原文
+            val show = AnswerCodec.forDisplay(known)   // 多选竖线→空格，空则 unknown
             if (show != lastShown) {
                 lastShown = show
                 host.broadcastExamAnswer(show)

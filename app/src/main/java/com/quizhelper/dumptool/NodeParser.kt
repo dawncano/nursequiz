@@ -39,19 +39,11 @@ data class VideoModel(
     val dismissBtn: XY?        // 取消/关闭(下一集弹窗等)
 )
 
-// ---- 考试模式（与竞品一致：考试无逐题反馈，靠练习已建的库作答 + 下一题 + 交卷，全程不建库）----
-// 结构为"照竞品逻辑 + 复用练习题目解析"的待校准骨架，按钮/标志需一场真实考试校准。
+// ---- 考试模式（错峰 + 只显示答案，见 REQUIREMENTS 5.8）：绝不点击，故只需题干+选项，无按钮/标志字段 ----
 data class ExamModel(
-    val isExam: Boolean,                 // 有"交卷/考生/答题卡/剩余时间"等考试标志
     val questionText: String,
-    val isMulti: Boolean,
-    val options: List<XY>,               // A→E 可点坐标
-    val optionTexts: List<String>,
-    val confirm: XY?,                    // "确定"(若考试每题也要确定)
-    val nextBtn: XY?,                    // "下一题"
-    val submitBtn: XY?,                  // "交卷"
-    val dialogConfirm: XY?,              // 交卷确认弹窗"确定"
-    val dismissBtn: XY?
+    val options: List<XY>,               // A→E 坐标(仅供展示，考试不点)
+    val optionTexts: List<String>
 )
 
 object NodeParser {
@@ -292,25 +284,10 @@ object NodeParser {
         return VideoModel(kind, watchPct, startBtn, posSec, totalSec, centerPlay, false, rows, dismiss)
     }
 
-    /** 考试模式解析（待校准骨架）：复用 parseLeaves 读题干+选项，另找 下一题/交卷/确定 与交卷弹窗。 */
+    /** 考试模式解析：只读题干+选项（错峰模式绝不点击，无需按钮/交卷/标志）。 */
     fun toExamModel(root: AccessibilityNodeInfo?): ExamModel {
-        root ?: return ExamModel(false, "", false, emptyList(), emptyList(), null, null, null, null, null)
-        val leaves = leavesOf(root)
-        val isExam = leaves.any {
-            it.text.contains("交卷") || it.text.contains("考生") ||
-                it.text.contains("答题卡") || it.text.contains("剩余时间")
-        }
-        val q = parseLeaves(leaves)
-        // 交卷确认弹窗：出现"确定交卷/确认交卷/确定要交卷"之类 → 取弹窗里的"确定"
-        val submitDialog = leaves.any { it.text.contains("交卷") && (it.text.contains("确定") || it.text.contains("确认")) }
-        val dialogConfirm = if (submitDialog) leaves.lastOrNull { it.text.trim() == "确定" }?.box?.let(::center) else null
-        val nextBtn = leaves.firstOrNull { it.text.trim() == "下一题" }?.box?.let(::center)
-        val submitBtn = leaves.firstOrNull { it.text.trim() == "交卷" }?.box?.let(::center)
-        val dismiss = closeBtn(leaves)?.let(::center)
-        return ExamModel(
-            isExam, q.questionRaw, q.kind == "多选",
-            q.options.map { center(it.box) }, q.options.map { it.text },
-            q.confirm?.let(::center), nextBtn, submitBtn, dialogConfirm, dismiss
-        )
+        root ?: return ExamModel("", emptyList(), emptyList())
+        val q = parseLeaves(leavesOf(root))
+        return ExamModel(q.questionRaw, q.options.map { center(it.box) }, q.options.map { it.text })
     }
 }

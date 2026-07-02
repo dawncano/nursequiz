@@ -33,7 +33,7 @@ class FloatMachine(private val host: AutoHost) {
                 if (known == null) known = AiHook.resolve(m.questionText, m.optionTexts)
                 // 仿竞品 win2：只显示正确答案【原文】(选项文字)，不是字母、不带前缀。多选用空格分隔。
                 // 是题但查不到答案(库无+AI关)→ 显示 unknown(区别于非答题页的占位「。。。」)。
-                host.overlay.showAnswer(known?.replace("|", "  ") ?: "unknown")
+                host.overlay.showAnswer(AnswerCodec.forDisplay(known))
                 Log.i(TAG, "FLOAT QUESTION q='${m.questionText}' show=${known ?: "unknown"}")
             }
             ScreenKind.FEEDBACK -> {
@@ -42,7 +42,7 @@ class FloatMachine(private val host: AutoHost) {
                 val ans = m.correctIdx.mapNotNull { m.optionTexts.getOrNull(it) }.joinToString("|")
                 if (ans.isNotEmpty() && storeKey.isNotEmpty()) host.store.put(storeKey, ans)
                 // 同样只显示正确答案原文；读不到正确答案显示 unknown。
-                host.overlay.showAnswer(if (ans.isNotEmpty()) ans.replace("|", "  ") else "unknown")
+                host.overlay.showAnswer(AnswerCodec.forDisplay(ans))
                 Log.i(TAG, "FLOAT FEEDBACK correct='$ans' 已建库")
             }
             else -> host.overlay.showAnswer("。。。")   // 非答题页保留占位，标签不消失(用户知道模式还在)
