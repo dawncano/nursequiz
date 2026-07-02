@@ -18,7 +18,8 @@
       "PowerShell(Get-ChildItem -Path \"$env:USERPROFILE\\\\.claude\" -Recurse -Filter \"marketplace.json\" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName)",
       "PowerShell(claude plugin install firecrawl@firecrawl --scope user 2>&1)",
       "PowerShell(claude plugin list 2>&1)",
-      "PowerShell(claude plugin uninstall firecrawl@firecrawl 2>&1)"
+      "PowerShell(claude plugin uninstall firecrawl@firecrawl 2>&1)",
+      "PowerShell($env:JAVA_HOME=\"D:\\\\Program Files\\\\Android\\\\Android Studio\\\\jbr\"; & \"E:\\\\code\\\\new\\\\gradlew.bat\" -p \"E:\\\\code\\\\new\" :app:assembleDebug :app:testDebugUnitTest --console=plain 2>&1 | Select-String -Pattern \"FAILED|error:|^e: |BUILD \\(SUCCESSFUL|FAILED\\)\")"
     ]
   }
 }

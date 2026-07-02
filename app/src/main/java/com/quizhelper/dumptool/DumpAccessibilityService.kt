@@ -340,9 +340,13 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
     override fun incAnswered() { answered++ }
     override fun unknownLimit(): Int = Prefs.unknownLimit(this)
     override fun captureUnhandled() { captureIfUnhandledQuestion() }
-    override fun broadcastExamAnswer(text: String) {
-        sendBroadcast(Intent(ExamOverlayService.ACTION_ANSWER).setPackage(packageName)
-            .putExtra(ExamOverlayService.EXTRA_TEXT, text))
+    /** 显示答案：考试模式(错峰、无障碍随时会被关)走独立前台服务的浮窗；其余走无障碍 overlay。 */
+    override fun showAnswer(text: String) {
+        if (Prefs.examMode(this))
+            sendBroadcast(Intent(ExamOverlayService.ACTION_ANSWER).setPackage(packageName)
+                .putExtra(ExamOverlayService.EXTRA_TEXT, text))
+        else
+            overlay.showAnswer(text)
     }
 
     /** 依次点击多个坐标（多选题用），点完回调。

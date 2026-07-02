@@ -32,7 +32,7 @@ class ExamMachine(private val host: AutoHost) {
             val show = AnswerCodec.forDisplay(known)   // 多选竖线→空格，空则 unknown
             if (show != lastShown) {
                 lastShown = show
-                host.broadcastExamAnswer(show)
+                host.showAnswer(show)
                 host.incAnswered()
                 Log.i(TAG, "EXAM q='${em.questionText.take(16)}' show=$show known=${known != null}")
             }
