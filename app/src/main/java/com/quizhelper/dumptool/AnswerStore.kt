@@ -36,6 +36,7 @@ class AnswerStore(private val context: Context) {
         // 和当前库够像就不切换(避免每帧 TASK_DETAIL 都重载)。
         if (currentFile != null && similarity(incoming, bankId(currentTitle, currentProject)) >= bankSim) return
         persist()
+        examIndex = null   // 可能合并/删库，跨库索引失效
         answers.clear()
         seenKeys.clear()
 
@@ -72,8 +73,34 @@ class AnswerStore(private val context: Context) {
     /** 给外部(失败计数等)用的稳定题干key，复用与 get() 相同的模糊归并逻辑，只读不登记。 */
     fun keyFor(question: String): String? = canonical(question, addIfNew = false)
 
-    /** 跨【所有】题库查答案（考试模式用，不限当前库）。委托到 [searchAllBanks]。 */
-    fun searchAll(question: String): String? = searchAllBanks(context, question)
+    // 考试模式跨库只读索引：合并所有库(归一化key→答案)。考试期间题库不变(只读、绝不建库)，故首次查询
+    // 时建、之后复用——把每题"全盘读文件+JSON解析"降为一次内存查找。put/setBank 改动数据时置空重建。
+    private var examIndex: Map<String, String>? = null
+
+    /** 跨【所有】题库查答案（考试模式用，不限当前库）。首建合并索引缓存，之后纯内存查：
+     *  归一化题干→精确命中 O(1)，否则对合并索引逐题算相似度取最像，≥SIM_THRESHOLD 才认。 */
+    fun searchAll(question: String): String? {
+        val norm = TextMatch.normalize(question)
+        if (norm.isEmpty()) return null
+        val index = examIndex ?: buildExamIndex().also { examIndex = it }
+        index[norm]?.let { return it }   // 精确命中
+        var best: String? = null
+        var bestSim = 0.0
+        for ((k, ans) in index) {
+            val sim = TextMatch.similarity(norm, k)
+            if (sim > bestSim) { bestSim = sim; best = ans }
+        }
+        return if (bestSim >= SIM_THRESHOLD) best else null
+    }
+
+    /** 合并所有库文件为一张 归一化key→答案 索引（写库时 key 已归一化，可直接比）。 */
+    private fun buildExamIndex(): Map<String, String> {
+        val merged = HashMap<String, String>()
+        File(context.getExternalFilesDir(null), "banks")
+            .listFiles { f -> f.name.endsWith(".json") }
+            ?.forEach { f -> merged.putAll(loadEntries(f)) }
+        return merged
+    }
 
     /** 记入正确答案并立即落盘。 */
     fun put(question: String, letters: String) {
@@ -81,6 +108,7 @@ class AnswerStore(private val context: Context) {
         val k = canonical(question, addIfNew = true) ?: return
         answers[k] = letters
         persist()
+        examIndex = null   // 题库有写入，跨库索引失效，下次 searchAll 重建
     }
 
     /**
@@ -206,30 +234,8 @@ class AnswerStore(private val context: Context) {
             Prefs.clearAll(context)
         }
 
-        /** 题干模糊命中阈值，实例 `get()`/`canonical` 与跨库 `searchAllBanks` 共用，避免两处漂移。 */
+        /** 题干模糊命中阈值，实例 `get()`/`canonical` 与跨库 `searchAll` 共用，避免两处漂移。 */
         const val SIM_THRESHOLD = 0.82
-
-        /** 跨【所有】题库搜答案（考试模式用：考试题库可能没单独刷过，不能只查当前库）。
-         *  返回存档的答案原文（选项文字，多选竖线分隔），没有则 null。逻辑与实例 `get()` 一致：
-         *  归一化题干后先找精确命中(O(1))，否则对全部库逐题算相似度取最像的，≥SIM_THRESHOLD 才认。
-         *  直接遍历库目录、每个文件只解析一次（不走 listBanks，省掉为拿计数多解析一遍的重复 I/O）。 */
-        fun searchAllBanks(context: Context, question: String): String? {
-            val norm = TextMatch.normalize(question)
-            if (norm.isEmpty()) return null
-            val files = File(context.getExternalFilesDir(null), "banks")
-                .listFiles { f -> f.name.endsWith(".json") } ?: return null
-            var best: String? = null
-            var bestSim = 0.0
-            for (f in files) {
-                val entries = loadEntries(f)           // 键在写库时已归一化，可直接比
-                entries[norm]?.let { return it }       // 精确命中，立即返回
-                for ((k, ans) in entries) {
-                    val sim = TextMatch.similarity(norm, k)
-                    if (sim > bestSim) { bestSim = sim; best = ans }
-                }
-            }
-            return if (bestSim >= SIM_THRESHOLD) best else null
-        }
 
         // --- 题库条目的查看/修正(供 MainActivity 6.8 用)。直接读写题库 JSON，
         //     不经过运行期实例。改动在下次 setBank 加载该库时生效。---
