@@ -9,18 +9,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
-import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
-import android.view.GestureDetector
-import android.view.Gravity
-import android.view.MotionEvent
-import android.view.View
 import android.view.WindowManager
-import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 
@@ -52,16 +46,14 @@ class ExamOverlayService : Service() {
     }
 
     private val handler = Handler(Looper.getMainLooper())
-    private lateinit var wm: WindowManager
-    private var label: TextView? = null
+    private var overlay: AnswerLabel? = null
     private var armed = false     // 是否已双击开始(开无障碍后)
-    private var hidden = false    // 音量+切换的隐/显态
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
-                ACTION_ANSWER -> setText(intent.getStringExtra(EXTRA_TEXT) ?: "unknown")
-                ACTION_TOGGLE -> toggleHidden()
+                ACTION_ANSWER -> overlay?.show(intent.getStringExtra(EXTRA_TEXT) ?: "unknown")
+                ACTION_TOGGLE -> overlay?.toggleHidden()
             }
         }
     }
@@ -70,9 +62,13 @@ class ExamOverlayService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         startAsForeground()
-        showLabel(PLACEHOLDER)
+        // 考试浮窗：TYPE_APPLICATION_OVERLAY 独立于无障碍存活；双击=开始；宽一点(200)放长答案。
+        overlay = AnswerLabel(
+            this, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, maxWidthDp = 200,
+            onDoubleTap = ::onDoubleTap,
+            onAddError = { toast("考试浮窗添加失败：${it.message}") }
+        ).also { it.show(PLACEHOLDER) }
         val f = IntentFilter().apply { addAction(ACTION_ANSWER); addAction(ACTION_TOGGLE) }
         ContextCompat.registerReceiver(this, receiver, f, ContextCompat.RECEIVER_NOT_EXPORTED)
         // 进场前关无障碍——骗过考试页 onLoadEnd 的检测(见 2.3)。没授 WRITE_SECURE_SETTINGS 时安全失败。
@@ -87,7 +83,7 @@ class ExamOverlayService : Service() {
 
     override fun onDestroy() {
         runCatching { unregisterReceiver(receiver) }
-        removeLabel()
+        overlay?.remove()
         // 关考试模式：把无障碍恢复开起来，普通/悬浮/视频模式才能用。
         A11yEnabler.enable(this)
         Log.i(TAG, "ExamOverlay onDestroy 恢复无障碍")
@@ -115,79 +111,17 @@ class ExamOverlayService : Service() {
         }
     }
 
-    // ---- 浮窗 --------------------------------------------------------------
+    // ---- 双击开始 ----------------------------------------------------------
 
-    /** 样式对齐悬浮答案标签(5.2)：浅灰小字、无底色、极淡阴影，尽量不引人注意。可拖动、双击开始。 */
-    private fun showLabel(text: String) {
-        if (label != null) { setText(text); return }
-        val tv = TextView(this).apply {
-            setTextColor(0xFFCCCCCC.toInt())
-            textSize = 11f
-            gravity = Gravity.CENTER
-            setShadowLayer(1.5f, 0f, 1f, 0x33000000)
-            setPadding(dp(4), dp(2), dp(4), dp(2))
-            alpha = 0.95f
-            maxWidth = dp(200)
-            this.text = text
-        }
-        val b = wm.currentWindowMetrics.bounds
-        val savedY = Prefs.overlayY(this)
-        val y0 = if (savedY != Int.MIN_VALUE) savedY else (b.height() * 0.15f).toInt()
-        val onRight = Prefs.overlaySideRight(this)
-        val lp = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT
-        ).apply { gravity = Gravity.TOP or (if (onRight) Gravity.RIGHT else Gravity.LEFT); x = dp(4); y = y0 }
-        attachTouch(tv, lp)
-        label = tv
-        runCatching { wm.addView(tv, lp) }
-            .onFailure { toast("考试浮窗添加失败：${it.message}") }
-    }
-
-    private fun setText(text: String) = handler.post { label?.text = text }
-
-    private fun removeLabel() {
-        label?.let { v -> runCatching { wm.removeView(v) } }
-        label = null
-    }
-
-    /** 音量+：隐藏/显示浮窗(遮答案，不引人注意)。用穿透+透明切换，保留窗口以便再显示。 */
-    private fun toggleHidden() = handler.post {
-        val v = label ?: return@post
-        hidden = !hidden
-        v.alpha = if (hidden) 0f else 0.95f
-    }
-
-    /** 双击=开始：开无障碍 + 文字变「开始」。无障碍服务重连后见 examMode 自动起只读循环。 */
+    /** 双击浮窗=开始：开无障碍 + 文字变「开始」。无障碍服务重连后见 examMode 自动起只读循环。 */
     private fun onDoubleTap() {
         if (armed) return
         armed = true
         val ok = A11yEnabler.enable(this)
-        setText(if (ok) "开始" else "开无障碍失败")
+        overlay?.show(if (ok) "开始" else "开无障碍失败")
         toast(if (ok) "已开启无障碍，开始读题显示答案" else "未能自动开无障碍(需adb授权)")
         Log.i(TAG, "ExamOverlay 双击开始 enableA11y=$ok")
     }
 
-    /** 触摸：GestureDetector 认双击(=开始)，同时手动处理拖动(与悬浮答案标签一致)。 */
-    private fun attachTouch(tv: TextView, lp: WindowManager.LayoutParams) {
-        val gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDoubleTap(e: MotionEvent): Boolean { onDoubleTap(); return true }
-        })
-        var ix = 0; var iy = 0; var downX = 0f; var downY = 0f
-        tv.setOnTouchListener { _, e ->
-            gd.onTouchEvent(e)
-            when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { ix = lp.x; iy = lp.y; downX = e.rawX; downY = e.rawY }
-                MotionEvent.ACTION_MOVE -> {
-                    lp.x = ix + (e.rawX - downX).toInt(); lp.y = iy + (e.rawY - downY).toInt()
-                    runCatching { wm.updateViewLayout(tv, lp) }
-                }
-            }
-            true
-        }
-    }
-
-    private fun dp(v: Int) = (resources.displayMetrics.density * v).toInt()
     private fun toast(msg: String) = handler.post { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
 }
