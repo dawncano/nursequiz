@@ -13,11 +13,9 @@ enum class ScreenKind { QUESTION, FEEDBACK, TASK_DETAIL, SUBMIT_DIALOG, UNKNOWN 
 data class ScreenModel(
     val kind: ScreenKind,
     val questionText: String = "",
-    val isMulti: Boolean = false,
     val options: List<XY> = emptyList(),     // 按 A,B,C,D,E 顺序的可点坐标
     val confirm: XY? = null,                 // "确定"
     val nextBtn: XY? = null,                 // 反馈区"下一题"或"提交"按钮
-    val isSubmit: Boolean = false,           // 反馈区动作按钮是"提交"(本轮最后一题)而非"下一题"
     val startBtn: XY? = null,                // "开始答题"
     val dialogConfirm: XY? = null,           // 提交弹窗"确定"
     val dismissBtn: XY? = null,              // UNKNOWN 画面里疑似可关闭的按钮(确定/关闭/我知道了)，用于自救

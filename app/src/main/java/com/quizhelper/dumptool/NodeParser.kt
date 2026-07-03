@@ -25,8 +25,9 @@ data class NodeQuestion(
 
 // ---- 视频自动挂课（5.14）：界面模型 ----
 enum class VideoKind { DETAIL, PLAYER, OTHER }
-/** 一个视频条目：名称 + 已学(累计)秒 + 总长秒 + 名称行可点中心(用于切到该视频)。 */
-data class VideoRow(val name: String, val watchedSec: Int, val totalSec: Int, val tap: XY)
+/** 一个视频条目：名称 + 已学(累计)秒 + 总长秒 + 名称行可点中心(用于切到该视频) + 真实覆盖率。
+ *  coverage=绿色进度条填充比(0..1，读不到=-1)：这才是"看完没"的真信号——累计会 replay 超总长、不可靠。 */
+data class VideoRow(val name: String, val watchedSec: Int, val totalSec: Int, val tap: XY, val coverage: Double)
 data class VideoModel(
     val kind: VideoKind,
     val watchPct: Double,      // 观看进度/完成进度 %，读不到 = -1
@@ -65,6 +66,14 @@ object NodeParser {
     /** 收集整棵树的非空文本叶子（题目/视频/考试/调试解析共用入口；root 为 null 返回空）。 */
     private fun leavesOf(root: AccessibilityNodeInfo?): List<Leaf> {
         val leaves = ArrayList<Leaf>(); walk(root, leaves); return leaves
+    }
+
+    /** 收集整棵树里**所有**节点的 bounds（含无文字的 View）——视频进度条没文字，leavesOf 收不到，
+     *  读绿条填充比要用这个。 */
+    private fun allRects(node: AccessibilityNodeInfo?, out: ArrayList<Rect>) {
+        node ?: return
+        val r = Rect(); node.getBoundsInScreen(r); out.add(r)
+        for (i in 0 until node.childCount) allRects(node.getChild(i), out)
     }
 
     /** 节点 bounds 中心 → 可点坐标。 */
@@ -155,7 +164,6 @@ object NodeParser {
         }
         // 3) 题目 / 反馈
         val q = parseLeaves(leaves)
-        val isMulti = q.kind == "多选"
         val hasAns = leaves.any { it.text.contains("正确答案") }
         if (q.options.isNotEmpty() && hasAns) {
             // 本轮最后一题的反馈页：底部"下一题"是失效的，必须点中部"提 交"交卷才能推进。
@@ -165,15 +173,14 @@ object NodeParser {
             val next = leaves.firstOrNull { it.text.trim() == "下一题" }?.box
             val action = submit ?: next
             return ScreenModel(
-                ScreenKind.FEEDBACK, questionText = q.questionRaw, isMulti = isMulti,
+                ScreenKind.FEEDBACK, questionText = q.questionRaw,
                 correctIdx = q.correctIdx, yourIdx = q.yourIdx, nextBtn = action?.let(::center),
-                isSubmit = submit != null,
                 optionTexts = q.options.map { it.text }
             )
         }
         if (q.options.isNotEmpty() && q.confirm != null) {
             return ScreenModel(
-                ScreenKind.QUESTION, questionText = q.questionRaw, isMulti = isMulti,
+                ScreenKind.QUESTION, questionText = q.questionRaw,
                 options = q.options.map { center(it.box) }, confirm = center(q.confirm),
                 optionTexts = q.options.map { it.text }
             )
@@ -229,6 +236,8 @@ object NodeParser {
     private val SEC_TIME = Regex("^(\\d{1,2}):(\\d{2})(?::(\\d{2}))?$")
     private val SPEED = Regex("^\\d+(?:\\.\\d+)?x$")        // 1.0x 倍速：播放器独有
     private val PCT = Regex("(\\d+(?:\\.\\d+)?)\\s*%")        // 观看进度/完成进度 X%
+    private val ROWNUM = Regex("^\\d+\\.$")                   // 视频列表纯序号叶"1."/"2."(点后无内容)——区别于名称"8.1..."
+    private val BARE_PCT = Regex("^\\d+(?:\\.\\d+)?\\s*%$")   // 裸百分比叶(如播放器页 "83.0776 %")——区别于"完成条件…达到95%"文案
 
     /** "MM:SS" / "HH:MM:SS" → 秒；不匹配返回 -1。internal：供本 module 单测。 */
     internal fun toSec(s: String): Int {
@@ -238,29 +247,58 @@ object NodeParser {
         return if (c.isEmpty()) a * 60 + b else a * 3600 + b * 60 + c.toInt()
     }
 
+    /** 读某行绿色进度条的真实覆盖率(0..1)——进度条无文字，从 allRects 按几何找：左≈88 的宽 View 簇，
+     *  容器右=最大右、填充右=最小右，覆盖=(填充右−左)/(容器右−左)。找不到=-1。这才是"看完没"的真信号。 */
+    private fun barCoverage(rects: List<Rect>, rowTop: Int, bandBottom: Int): Double {
+        val cand = rects.filter { it.left in 70..110 && it.top > rowTop + 40 && it.top < bandBottom && (it.right - it.left) > 300 }
+        if (cand.isEmpty()) return -1.0
+        val left = cand.minOf { it.left }
+        val full = cand.maxOf { it.right } - left
+        val fill = cand.minOf { it.right } - left
+        if (full <= 0) return -1.0
+        return (fill.toDouble() / full).coerceIn(0.0, 1.0)
+    }
+
     fun toVideoModel(root: AccessibilityNodeInfo?): VideoModel {
         root ?: return VideoModel(VideoKind.OTHER, -1.0, null, -1, -1, null, false, emptyList(), null)
         val leaves = leavesOf(root)
         val rb = Rect(); root.getBoundsInScreen(rb)
+        val rects = ArrayList<Rect>(); allRects(root, rects)
 
+        // 整体完成进度%（完成条件按此判定，≥95=完成）：详情页在"观看进度 X%"这一叶；播放器页是**独立裸叶**
+        // "83.0776 %"。都要能读到。**必须**排除静态文案"完成条件：视频进度达到95%"——取全页最大% 会把 95
+        // 当成已看进度→一进就误判"已达95%"直接停(真机实测秒停根因)。故：先取"观看进度/完成进度"标签叶的%，
+        // 没有再取裸百分比叶(BARE_PCT 不匹配"…达到95%"那种带别的字的文案)。
         val watchPct = leaves.asSequence()
+            .filter { it.text.contains("观看进度") || it.text.contains("完成进度") }
             .mapNotNull { PCT.find(it.text)?.groupValues?.get(1)?.toDoubleOrNull() }
-            .maxOrNull() ?: -1.0
+            .firstOrNull()
+            ?: leaves.asSequence()
+                .filter { BARE_PCT.matches(it.text.trim()) }
+                .mapNotNull { PCT.find(it.text)?.groupValues?.get(1)?.toDoubleOrNull() }
+                .firstOrNull() ?: -1.0
         val startBtn = leaves.firstOrNull { it.text.contains("开始观看") }?.box?.let(::center)
         val isPlayer = leaves.any { SPEED.matches(it.text.trim()) }   // 倍速=播放器独有
 
-        // 视频条目：以 .mp4 名称行为锚，右侧的 MM:SS：上=总长、下=已学(累计)
+        // 视频条目（2026-07-03 真机播放器结构校准）：每行 = 纯序号叶"N. " + 名称叶(不含 .mp4，旧假设已废)
+        //  + 右侧两个时刻叶(上=总长、下=累计已学)。以"纯序号叶"(^\d+\.$)为锚——名称"8.1..."也形如数字点，
+        // 用"点后无内容"把序号和名称/考试行区分开。右侧时刻按 top 排：first=总长、last=累计。
         val rows = ArrayList<VideoRow>()
-        leaves.filter { it.text.contains(".mp4") }.sortedBy { it.box.top }.forEach { name ->
-            val times = leaves.filter {
-                it !== name && it.box.left > name.box.right &&
-                    it.box.top < name.box.bottom + 160 && it.box.bottom > name.box.top - 20 &&
-                    toSec(it.text) >= 0
-            }.sortedBy { it.box.top }
+        val anchors = leaves.filter { ROWNUM.matches(it.text.trim()) }.sortedBy { it.box.top }
+        anchors.forEachIndexed { i, num ->
+            val bandBottom = anchors.getOrNull(i + 1)?.box?.top ?: (num.box.top + 220)
+            fun inBand(b: Rect) = b.top >= num.box.top - 30 && b.top < bandBottom
+            val name = leaves.filter {
+                it !== num && it.box.left >= num.box.right - 10 && toSec(it.text) < 0 && it.text.isNotBlank() &&
+                    it.box.top >= num.box.top - 30 && it.box.top < num.box.top + 60
+            }.minByOrNull { it.box.left }
+            val times = leaves.filter { toSec(it.text) >= 0 && it.box.left > num.box.right + 200 && inBand(it.box) }
+                .sortedBy { it.box.top }
             if (times.isNotEmpty()) {
                 val total = toSec(times.first().text)
                 val watched = if (times.size >= 2) toSec(times.last().text) else -1
-                rows.add(VideoRow(name.text.trim(), watched, total, center(name.box)))
+                val tap = XY(rb.centerX(), (num.box.top + num.box.bottom) / 2)
+                rows.add(VideoRow(name?.text?.trim() ?: num.text.trim(), watched, total, tap, barCoverage(rects, num.box.top, bandBottom)))
             }
         }
 
