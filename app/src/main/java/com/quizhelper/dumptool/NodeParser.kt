@@ -247,16 +247,18 @@ object NodeParser {
         return if (c.isEmpty()) a * 60 + b else a * 3600 + b * 60 + c.toInt()
     }
 
-    /** 读某行绿色进度条的真实覆盖率(0..1)——进度条无文字，从 allRects 按几何找：左≈88 的宽 View 簇，
-     *  容器右=最大右、填充右=最小右，覆盖=(填充右−左)/(容器右−左)。找不到=-1。这才是"看完没"的真信号。 */
+    /** 读某行绿色进度条的真实覆盖率(0..1)——进度条无文字，从 allRects 按几何找。这才是"看完没"的真信号。
+     *  结构：左≈88 处一簇同左同顶的矩形——灰轨道(最宽)+绿填充(子)。**空条的填充是零宽矩形** `[88..][88..]`，
+     *  绝不能按"宽度"过滤掉它，否则只剩满宽轨道→min=max→误判 100%（真机实测未看的任务被当成已看完）。
+     *  做法：先取最宽的当轨道(=满值)，再在与轨道同左同顶的矩形里取最小右当填充右；覆盖=(填充右−左)/满值。 */
     private fun barCoverage(rects: List<Rect>, rowTop: Int, bandBottom: Int): Double {
-        val cand = rects.filter { it.left in 70..110 && it.top > rowTop + 40 && it.top < bandBottom && (it.right - it.left) > 300 }
-        if (cand.isEmpty()) return -1.0
-        val left = cand.minOf { it.left }
-        val full = cand.maxOf { it.right } - left
-        val fill = cand.minOf { it.right } - left
-        if (full <= 0) return -1.0
-        return (fill.toDouble() / full).coerceIn(0.0, 1.0)
+        val cand = rects.filter { it.left in 70..110 && it.top > rowTop + 40 && it.top < bandBottom }
+        val track = cand.maxByOrNull { it.right - it.left } ?: return -1.0
+        val full = track.right - track.left
+        if (full < 300) return -1.0                 // 没找到够宽的进度条轨道
+        val fillRight = cand.filter { it.left == track.left && kotlin.math.abs(it.top - track.top) <= 8 }
+            .minOf { it.right }                      // 空条=左本身(零宽填充)→0%；满条=轨道右→100%
+        return ((fillRight - track.left).toDouble() / full).coerceIn(0.0, 1.0)
     }
 
     fun toVideoModel(root: AccessibilityNodeInfo?): VideoModel {
