@@ -1,5 +1,6 @@
 package com.quizhelper.dumptool
 
+import android.content.Context
 import android.view.accessibility.AccessibilityNodeInfo
 
 /**
@@ -8,6 +9,9 @@ import android.view.accessibility.AccessibilityNodeInfo
  * 不再直接耦合 AccessibilityService——各模式自包含、可独立校准（考试/视频尤其需要）。
  */
 interface AutoHost {
+    /** 应用 Context（供 [AiHook] 读 Prefs/发网络请求等需要 Context 的能力用）。Service 本身即 Context。 */
+    val appContext: Context
+
     /** 答案题库（按题库分文件存）。 */
     val store: AnswerStore
 

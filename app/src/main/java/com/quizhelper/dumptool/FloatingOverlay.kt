@@ -25,6 +25,7 @@ interface OverlayHost {
     fun overlayPaused(): Boolean
     fun overlayGroupsDone(): Int
     fun overlayTarget(): Int          // 运行中=本次锁定目标；空闲=设置页当前值
+    fun overlayMode(): AnswerMode     // 当前作答模式——组进度只对答题有意义，视频挂课等要换成对应文案
     fun overlayStart()
     fun overlayPause()
     fun overlayResume()
@@ -324,9 +325,10 @@ class FloatingOverlay(private val ctx: Context, private val host: OverlayHost) {
         }
     }
 
-    /** 胶囊态：从边缘探出，显示"当前/目标"进度。 */
+    /** 胶囊态：从边缘探出，显示进度。答题=组进度"当前/目标"；视频挂课没有"组"概念，显示"挂课"。 */
     private fun buildArch(): View = TextView(ctx).apply {
-        text = "${host.overlayGroupsDone()}/${host.overlayTarget()}"
+        text = if (host.overlayMode() == AnswerMode.VIDEO) "挂课"
+        else "${host.overlayGroupsDone()}/${host.overlayTarget()}"
         setTextColor(0xFFFFFFFF.toInt())
         textSize = 16f
         gravity = Gravity.CENTER
@@ -344,11 +346,12 @@ class FloatingOverlay(private val ctx: Context, private val host: OverlayHost) {
             alpha = 0.95f
         }
         val g = host.overlayGroupsDone(); val t = host.overlayTarget()
+        val video = host.overlayMode() == AnswerMode.VIDEO   // 视频挂课不显示"组"进度
         when {
             !host.overlayRunning() ->
-                bar.addView(makeButton("▶ 开始 (0/$t)", colorIdle) { host.overlayStart(); collapseToBall() })
+                bar.addView(makeButton(if (video) "▶ 开始挂课" else "▶ 开始 (0/$t)", colorIdle) { host.overlayStart(); collapseToBall() })
             host.overlayPaused() -> {
-                bar.addView(makeButton("▶ 继续 ($g/$t)", colorRun) { host.overlayResume(); collapseToBall() })
+                bar.addView(makeButton(if (video) "▶ 继续" else "▶ 继续 ($g/$t)", colorRun) { host.overlayResume(); collapseToBall() })
                 bar.addView(makeButton("■ 结束", colorFail) { host.overlayStop() })
             }
             else -> {

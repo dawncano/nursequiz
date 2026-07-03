@@ -5,6 +5,10 @@
     <!-- 自动停止(达标/卡住)时发通知，无人值守也能看到。Android13+ 需运行期授权。 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- 题库未命中时的 AI 兜底：把题干+选项发第三方聚合平台 LuckyCola(通义千问中转，同竞品)取答案。
+         普通网络权限，安装即授予，无需运行期申请。见 REQUIREMENTS 5.2 AI 兜底。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- 自动开启无障碍：普通App拿不到这个签名级权限，靠 adb 一次性授予
          (adb shell pm grant com.quizhelper.dumptool android.permission.WRITE_SECURE_SETTINGS，
           build.ps1 已自动带上)。授予后 App 可自己写 secure settings 开无障碍，免去手动进设置。

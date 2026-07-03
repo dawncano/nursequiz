@@ -255,7 +255,7 @@ class AnswerStore(private val context: Context) {
             runCatching {
                 val o = JSONObject(file.readText())
                 val ans = o.optJSONObject("answers") ?: JSONObject()
-                ans.put(question, letters)
+                ans.put(TextMatch.normalize(question), letters)   // 键与自动入库一致地归一化，见 editEntry
                 o.put("answers", ans).put("updated", System.currentTimeMillis())
                 file.writeText(o.toString())
             }.onFailure { Log.e(TAG, "saveEntry failed", it) }
@@ -267,7 +267,10 @@ class AnswerStore(private val context: Context) {
             runCatching {
                 val o = JSONObject(file.readText())
                 val ans = o.optJSONObject("answers") ?: JSONObject()
-                val newQ = newQuestion.ifBlank { oldQuestion }
+                // 键必须与自动入库(put→canonical→normalize)一致地归一化(去标点/空格)：运行期 get() 会先
+                // 归一化查询串再匹配，手改时若原样写入带标点的题干，快路径精确命中不到、慢路径相似度也
+                // 对不齐(归一化串 vs 带标点串)，会静默查不到。
+                val newQ = TextMatch.normalize(newQuestion.ifBlank { oldQuestion })
                 if (newQ != oldQuestion) ans.remove(oldQuestion)   // 题干变了→删旧键
                 ans.put(newQ, letters)                              // 插/更新(放到末尾=最近)
                 o.put("answers", ans).put("updated", System.currentTimeMillis())

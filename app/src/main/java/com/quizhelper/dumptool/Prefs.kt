@@ -19,6 +19,9 @@ object Prefs {
     private const val KEY_HUMANIZE = "humanize"
     private const val KEY_VIDEO = "video_mode"
     private const val KEY_EXAM = "exam_mode"
+    private const val KEY_AI = "ai_enabled"
+    private const val KEY_AI_APPKEY = "ai_appkey"
+    private const val KEY_AI_UID = "ai_uid"
 
     // 默认值：14组、连续5次UNKNOWN停。
     // 步与步之间的"等下一屏"已改走 waitFor(等屏就绪)；DEF_STEP 现仅作内部"基础间隔"：
@@ -56,6 +59,20 @@ object Prefs {
     /** 考试模式：开=进入考试时查库作答+下一题+交卷(全程不建库，靠练习已建的库)；关=正常练习。默认关。 */
     fun examMode(c: Context): Boolean = sp(c).getBoolean(KEY_EXAM, false)
     fun setExamMode(c: Context, v: Boolean) = sp(c).edit().putBoolean(KEY_EXAM, v).apply()
+
+    /** AI 兜底开关：开=题库没查到的题，先问一次云端 AI(LuckyCola 通义千问中转，同竞品)当兜底答案。
+     *  默认关。这是【正交增强】而非答题模式，不参与上面三个模式的互斥；对答题/悬浮/考试都生效
+     *  (实际最有用的是考试模式——考试无对错反馈、新题只能靠 AI；答题/悬浮有反馈页会自愈建库，AI 只是锦上添花)。 */
+    fun aiEnabled(c: Context): Boolean = sp(c).getBoolean(KEY_AI, false)
+    fun setAiEnabled(c: Context, v: Boolean) = sp(c).edit().putBoolean(KEY_AI, v).apply()
+
+    /** LuckyCola 平台账号的 appKey(在 luckycola.com.cn 注册后拿)。空则 AI 兜底不生效。 */
+    fun aiAppKey(c: Context): String = sp(c).getString(KEY_AI_APPKEY, "")?.trim().orEmpty()
+    fun setAiAppKey(c: Context, v: String) = sp(c).edit().putString(KEY_AI_APPKEY, v.trim()).apply()
+
+    /** LuckyCola 平台账号的 uid(同上，与 appKey 成对使用)。空则 AI 兜底不生效。 */
+    fun aiUid(c: Context): String = sp(c).getString(KEY_AI_UID, "")?.trim().orEmpty()
+    fun setAiUid(c: Context, v: String) = sp(c).edit().putString(KEY_AI_UID, v.trim()).apply()
 
     /** 三个模式开关在设置页互斥，这里按固定优先级(视频>考试>悬浮>普通)解析成单一模式，loopStep 据此分派。
      *  优先级与原 loopStep 里的 if 顺序一致——万一多个开关同时为真也只会进一个分支，行为不变。 */

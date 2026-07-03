@@ -10,7 +10,7 @@
 .externalNativeBuild/
 .cxx/
 local.properties
-/logcat_latest.txt
+/diagnostics/
 
 /q.png
 
@@ -19,9 +19,11 @@ local.properties
 /boundary/
 /unhandled/
 
-# 竞品逆向分析：整目录是大体积 apk/解包/dump，仅放行被 REQUIREMENTS.md §7 引用的笔记
-/apk_analysis/
-!/apk_analysis/竞品亮点速记.md
+# 竞品逆向分析：默认忽略大体积 apk/解包/dump，仅放行被 REQUIREMENTS.md §7 引用的笔记
+/apk_analysis/*
+!/apk_analysis/notes/
+/apk_analysis/notes/*
+!/apk_analysis/notes/竞品亮点速记.md
 
 # 签名密钥：本地保留供 release 构建，绝不提交（build.gradle.kts 通过 ../huli_release.jks 引用）
 *.jks

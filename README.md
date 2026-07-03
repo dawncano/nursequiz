@@ -46,3 +46,12 @@ app/src/main/
     ├── values/{strings,themes}.xml
     └── drawable/ic_launcher.xml
 ```
+
+## 资料目录
+
+- `docs/plans/`：过程性方案文档与重构草案。
+- `diagnostics/`：本地调试日志与一次性排障产物。
+- `apk_analysis/notes/`：竞品分析笔记。
+- `apk_analysis/apks/`：样本 APK。
+- `apk_analysis/decompiled/`：反编译/解包产物。
+- `apk_analysis/captures/`：节点 dump、截图与流程抓取。

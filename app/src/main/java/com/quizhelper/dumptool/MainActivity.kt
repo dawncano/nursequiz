@@ -31,6 +31,10 @@ class MainActivity : Activity() {
     private lateinit var banksContainer: LinearLayout
     private lateinit var settingsContainer: LinearLayout
 
+    // 数字设置(目标组数/UNKNOWN阈值/收回延时)的提交动作。每次 buildSettings 重建时重填，
+    // 由「保存设置」按钮和 onPause 统一触发，避免"输完没失焦就切后台"丢改动。
+    private val numberSavers = ArrayList<() -> Unit>()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -117,6 +121,7 @@ class MainActivity : Activity() {
      *  全部即时写入 Prefs，运行中的无障碍服务下一拍就会读到。 */
     private fun buildSettings() {
         settingsContainer.removeAllViews()
+        numberSavers.clear()
 
         val floatSwitch = Switch(this).apply {
             text = "悬浮答案模式（只在悬浮窗提示答案，自己点）"
@@ -177,6 +182,29 @@ class MainActivity : Activity() {
             setPadding(0, 4, 0, 12)
         })
 
+        // ---- AI 兜底（题库没查到的题，问云端 AI 当兜底答案）----
+        val aiSwitch = Switch(this).apply {
+            text = "AI 兜底（题库没查到时问 AI）"
+            textSize = 15f
+            isChecked = Prefs.aiEnabled(this@MainActivity)
+            setPadding(0, 12, 0, 12)
+            setOnCheckedChangeListener { _, checked -> Prefs.setAiEnabled(this@MainActivity, checked) }
+        }
+        settingsContainer.addView(aiSwitch)
+        settingsContainer.addView(TextView(this).apply {
+            text = "开：题库里查不到的新题，先问一次云端 AI 当兜底答案（用的平台和竞品一样：LuckyCola 通义千问中转）。" +
+                "\n最有用的是【考试模式】——考试没有对错反馈、新题只能靠 AI 提示。答题/悬浮模式有反馈页会自动学答案入库，AI 只是让第一遍也尽量答对（会消耗额度）。" +
+                "\n需在 luckycola.com.cn 注册账号，拿到 appKey 和 uid 填到下面两栏（两个都要填，缺一个 AI 不生效）。"
+            textSize = 12f
+            setPadding(0, 4, 0, 12)
+        })
+        settingsContainer.addView(textRow("LuckyCola appKey", Prefs.aiAppKey(this), "在 luckycola.com.cn 个人中心获取") {
+            Prefs.setAiAppKey(this, it)
+        })
+        settingsContainer.addView(textRow("LuckyCola uid", Prefs.aiUid(this), "同上，与 appKey 成对") {
+            Prefs.setAiUid(this, it)
+        })
+
         settingsContainer.addView(numberRow("目标组数（做满自动停）", Prefs.targetGroups(this).toString()) {
             it.toIntOrNull()?.let { v -> Prefs.setTargetGroups(this, v) }
         })
@@ -185,6 +213,12 @@ class MainActivity : Activity() {
         })
         settingsContainer.addView(numberRow("悬浮窗无操作多少毫秒收回成球（默认3000）", Prefs.attachDelayMs(this).toString()) {
             it.toLongOrNull()?.let { v -> Prefs.setAttachDelayMs(this, v) }
+        })
+
+        settingsContainer.addView(Button(this).apply {
+            text = "保存设置"
+            setPadding(0, 12, 0, 12)
+            setOnClickListener { numberSavers.forEach { it() }; toast("设置已保存") }
         })
     }
 
@@ -200,13 +234,40 @@ class MainActivity : Activity() {
             text = label
             textSize = 14f
         })
-        row.addView(EditText(this).apply {
+        val edit = EditText(this).apply {
             layoutParams = LinearLayout.LayoutParams(220, ViewGroup.LayoutParams.WRAP_CONTENT)
             inputType = InputType.TYPE_CLASS_NUMBER
             setText(initial)
             setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) save(text.toString()) }
-        })
+        }
+        numberSavers.add { save(edit.text.toString()) }   // 「保存设置」/onPause 兜底提交
+        row.addView(edit)
         return row
+    }
+
+    /** 一个"标签 + 整行文本输入框"竖排块（用于较长的 appKey/uid），失焦或「保存设置」/onPause 时写进 Prefs。 */
+    private fun textRow(label: String, initial: String, hint: String, save: (String) -> Unit): View {
+        val block = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 8, 0, 8)
+        }
+        block.addView(TextView(this).apply { text = label; textSize = 14f })
+        val edit = EditText(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            inputType = InputType.TYPE_CLASS_TEXT
+            textSize = 13f
+            this.hint = hint
+            setText(initial)
+            setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) save(text.toString()) }
+        }
+        numberSavers.add { save(edit.text.toString()) }   // 复用「保存设置」/onPause 的统一提交列表
+        block.addView(edit)
+        return block
+    }
+
+    override fun onPause() {
+        super.onPause()
+        numberSavers.forEach { it() }   // 兜底：没失焦就切后台时也把数字设置存下来
     }
 
     override fun onResume() {

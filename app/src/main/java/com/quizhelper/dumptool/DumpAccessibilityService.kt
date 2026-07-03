@@ -29,7 +29,7 @@ import java.util.Locale
  * 自动答题/挂课服务（无障碍节点树直读 + 坐标点击）——逻辑层。
  *  - 悬浮控制 UI 已抽到 [FloatingOverlay]；本类只负责答题循环、状态机、广播、通知。
  *  - 实现 [OverlayHost]：把运行态/进度暴露给悬浮球，并接收其按钮动作。
- *  - adb 广播调试：
+ *  - adb 广播调试（仅 debug 包；release 包接收器锁为 NOT_EXPORTED，下列广播不对外开放）：
  *      am broadcast -a com.quizhelper.dumptool.START   开始自动答题
  *      am broadcast -a com.quizhelper.dumptool.STOP    停止
  *      am broadcast -a com.quizhelper.dumptool.SHOW    重新唤出悬浮球
@@ -46,6 +46,10 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /** AutoHost：Service 本身即 Context，供 AiHook 读 Prefs/发网络请求用。 */
+    override val appContext: android.content.Context get() = this
+
     override lateinit var overlay: FloatingOverlay
 
     override lateinit var store: AnswerStore
@@ -111,7 +115,12 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
             addAction("com.quizhelper.dumptool.NODES")
             addAction("com.quizhelper.dumptool.NODEQ")
         }
-        ContextCompat.registerReceiver(this, cmdReceiver, filter, ContextCompat.RECEIVER_EXPORTED)
+        // 命令广播仅供开发期 adb 调试。release 包锁成 NOT_EXPORTED——否则设备上任意 App 都能发
+        // START(触发自动点击)/NODES(把当前屏幕节点树导出到剪贴板)。App 自身(MainActivity)的
+        // SHOW/MODE 广播走 setPackage(同 uid)，NOT_EXPORTED 也照收，不受影响。
+        val cmdExport = if (BuildConfig.DEBUG) ContextCompat.RECEIVER_EXPORTED
+                        else ContextCompat.RECEIVER_NOT_EXPORTED
+        ContextCompat.registerReceiver(this, cmdReceiver, filter, cmdExport)
         // 考试模式(错峰)：无障碍是被 ExamOverlayService 在用户双击「。。。」后自动开起来的，
         // 这次重连 = 用户已发出"开始"信号 → 自动起只读循环(读题跨库搜答案广播给浮窗)，无需点悬浮球。
         if (Prefs.examMode(this)) { startAuto(); return }
@@ -177,6 +186,7 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
     override fun overlayGroupsDone() = groupsDone
     /** 运行中取本次锁定的 targetGroups，空闲时取设置页当前值。 */
     override fun overlayTarget() = if (auto) targetGroups else Prefs.targetGroups(this)
+    override fun overlayMode() = Prefs.mode(this)
     override fun overlayStart() { startAuto() }
     override fun overlayPause() { if (auto && !paused) togglePause() }
     override fun overlayResume() { if (paused) togglePause() }
@@ -243,14 +253,17 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
         overlay.scheduleCollapse()   // 结束后完整态停留 N 秒再自动收回成球
         clearDumps()   // 不管是手动停止还是达到目标组数自动停止，都顺手清掉本次运行的调试临时文件
         Log.i(TAG, "STOP: $reason (groups=$groupsDone answered=$answered)")
-        val summary = "$reason（完成 $groupsDone 组，答 $answered 题）"
+        // 汇总/通知按模式给文案——"完成X组答Y题"只对答题有意义；视频挂课没有"组/题"，只报原因。
+        val isVideo = Prefs.mode(this) == AnswerMode.VIDEO
+        val summary = if (isVideo) reason else "$reason（完成 $groupsDone 组，答 $answered 题）"
+        val title = if (isVideo) "视频挂课已停止" else "自动答题已停止"
         toast("已停止：$summary")
         // 非手动停止(达标完成 / 卡住需人工)再发一条通知——无人值守时 toast 一闪而过看不到。
-        if (reason != "手动停止" && reason != "手动结束") notifyStop(summary)
+        if (reason != "手动停止" && reason != "手动结束") notifyStop(title, summary)
     }
 
-    /** 发一条"自动答题已停止"的通知。Android13+ 没授通知权限时系统会静默丢弃，不影响其它逻辑。 */
-    private fun notifyStop(msg: String) {
+    /** 发一条"已停止"的通知(标题按模式)。Android13+ 没授通知权限时系统会静默丢弃，不影响其它逻辑。 */
+    private fun notifyStop(title: String, msg: String) {
         runCatching {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val chId = "quiz_auto_stop"
@@ -261,7 +274,7 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
             }
             val n = Notification.Builder(this, chId)
                 .setSmallIcon(android.R.drawable.stat_sys_warning)
-                .setContentTitle("自动答题已停止")
+                .setContentTitle(title)
                 .setContentText(msg)
                 .setAutoCancel(true)
                 .build()
