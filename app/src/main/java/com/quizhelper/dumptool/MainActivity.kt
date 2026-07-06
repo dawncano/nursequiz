@@ -31,9 +31,9 @@ class MainActivity : Activity() {
     private lateinit var banksContainer: LinearLayout
     private lateinit var settingsContainer: LinearLayout
 
-    // 数字设置(目标组数/UNKNOWN阈值/收回延时)的提交动作。每次 buildSettings 重建时重填，
+    // 设置输入框(数字项 + appKey/uid 文本项)的待提交动作。每次 buildSettings 重建时重填，
     // 由「保存设置」按钮和 onPause 统一触发，避免"输完没失焦就切后台"丢改动。
-    private val numberSavers = ArrayList<() -> Unit>()
+    private val pendingSavers = ArrayList<() -> Unit>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -121,7 +121,7 @@ class MainActivity : Activity() {
      *  全部即时写入 Prefs，运行中的无障碍服务下一拍就会读到。 */
     private fun buildSettings() {
         settingsContainer.removeAllViews()
-        numberSavers.clear()
+        pendingSavers.clear()
 
         val floatSwitch = Switch(this).apply {
             text = "悬浮答案模式（只在悬浮窗提示答案，自己点）"
@@ -218,7 +218,7 @@ class MainActivity : Activity() {
         settingsContainer.addView(Button(this).apply {
             text = "保存设置"
             setPadding(0, 12, 0, 12)
-            setOnClickListener { numberSavers.forEach { it() }; toast("设置已保存") }
+            setOnClickListener { pendingSavers.forEach { it() }; toast("设置已保存") }
         })
     }
 
@@ -238,11 +238,15 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(220, ViewGroup.LayoutParams.WRAP_CONTENT)
             inputType = InputType.TYPE_CLASS_NUMBER
             setText(initial)
-            setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) save(text.toString()) }
-        }
-        numberSavers.add { save(edit.text.toString()) }   // 「保存设置」/onPause 兜底提交
+        }.wireSave(save)
         row.addView(edit)
         return row
+    }
+
+    /** 给设置输入框挂"失焦即存"，并登记到 pendingSavers(「保存设置」/onPause 兜底提交)。 */
+    private fun EditText.wireSave(save: (String) -> Unit): EditText = apply {
+        setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) save(text.toString()) }
+        pendingSavers.add { save(text.toString()) }
     }
 
     /** 一个"标签 + 整行文本输入框"竖排块（用于较长的 appKey/uid），失焦或「保存设置」/onPause 时写进 Prefs。 */
@@ -258,16 +262,14 @@ class MainActivity : Activity() {
             textSize = 13f
             this.hint = hint
             setText(initial)
-            setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) save(text.toString()) }
-        }
-        numberSavers.add { save(edit.text.toString()) }   // 复用「保存设置」/onPause 的统一提交列表
+        }.wireSave(save)
         block.addView(edit)
         return block
     }
 
     override fun onPause() {
         super.onPause()
-        numberSavers.forEach { it() }   // 兜底：没失焦就切后台时也把数字设置存下来
+        pendingSavers.forEach { it() }   // 兜底：没失焦就切后台时也把设置输入框存下来
     }
 
     override fun onResume() {

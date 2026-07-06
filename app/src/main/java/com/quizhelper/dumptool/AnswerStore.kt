@@ -250,12 +250,17 @@ class AnswerStore(private val context: Context) {
             return map
         }
 
+        /** answers 里所有 key 的统一归一化口径(去标点/空格)。手改入库必须和自动入库
+         *  (canonical→normalizeQuestion)、运行期 get() 的查询归一化保持一致，否则快路径精确
+         *  命中不到、慢路径相似度也对不齐(归一化串 vs 带标点串)，会静默查不到。改规则只改这一处。 */
+        private fun normalizedKey(question: String): String = TextMatch.normalize(question)
+
         /** 改写/新增一条答案，保留标题/项目并刷新 updated。 */
         fun saveEntry(file: File, question: String, letters: String) {
             runCatching {
                 val o = JSONObject(file.readText())
                 val ans = o.optJSONObject("answers") ?: JSONObject()
-                ans.put(TextMatch.normalize(question), letters)   // 键与自动入库一致地归一化，见 editEntry
+                ans.put(normalizedKey(question), letters)
                 o.put("answers", ans).put("updated", System.currentTimeMillis())
                 file.writeText(o.toString())
             }.onFailure { Log.e(TAG, "saveEntry failed", it) }
@@ -267,10 +272,7 @@ class AnswerStore(private val context: Context) {
             runCatching {
                 val o = JSONObject(file.readText())
                 val ans = o.optJSONObject("answers") ?: JSONObject()
-                // 键必须与自动入库(put→canonical→normalize)一致地归一化(去标点/空格)：运行期 get() 会先
-                // 归一化查询串再匹配，手改时若原样写入带标点的题干，快路径精确命中不到、慢路径相似度也
-                // 对不齐(归一化串 vs 带标点串)，会静默查不到。
-                val newQ = TextMatch.normalize(newQuestion.ifBlank { oldQuestion })
+                val newQ = normalizedKey(newQuestion.ifBlank { oldQuestion })
                 if (newQ != oldQuestion) ans.remove(oldQuestion)   // 题干变了→删旧键
                 ans.put(newQ, letters)                              // 插/更新(放到末尾=最近)
                 o.put("answers", ans).put("updated", System.currentTimeMillis())
