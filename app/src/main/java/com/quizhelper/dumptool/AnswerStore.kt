@@ -168,12 +168,8 @@ class AnswerStore(private val context: Context) {
     private fun load() {
         val f = file() ?: return
         if (!f.exists()) return
-        runCatching {
-            val obj = JSONObject(f.readText())
-            val ans = obj.optJSONObject("answers") ?: return@runCatching
-            for (k in ans.keys()) answers[k] = ans.getString(k)
-            seenKeys.addAll(answers.keys)
-        }.onFailure { Log.e(TAG, "load failed", it) }
+        answers.putAll(loadEntries(f))   // 复用 companion 的读解析，key 顺序照文件保留
+        seenKeys.addAll(answers.keys)
     }
 
     private fun persist() {
@@ -240,13 +236,27 @@ class AnswerStore(private val context: Context) {
         // --- 题库条目的查看/修正(供 MainActivity 6.8 用)。直接读写题库 JSON，
         //     不经过运行期实例。改动在下次 setBank 加载该库时生效。---
 
+        /** 读 bank 文件的 answers 子对象(缺失当空对象)；读/解析失败返回 null。 */
+        private fun readAnswers(file: File): JSONObject? =
+            runCatching { JSONObject(file.readText()).optJSONObject("answers") ?: JSONObject() }.getOrNull()
+
+        /** 「读文件→取/建 answers→改→回写并 bump updated」的统一收口——block 直接改传入的 answers。
+         *  收敛了 editEntry/deleteEntry 里逐字重复的读改写样板，改 schema/时间戳语义只动这一处。 */
+        private fun mutateAnswers(file: File, block: (JSONObject) -> Unit) {
+            runCatching {
+                val o = JSONObject(file.readText())
+                val ans = o.optJSONObject("answers") ?: JSONObject()
+                block(ans)
+                o.put("answers", ans).put("updated", System.currentTimeMillis())
+                file.writeText(o.toString())
+            }.onFailure { Log.e(TAG, "mutateAnswers failed on ${file.name}", it) }
+        }
+
         /** 读出某题库文件里的全部"题干 → 答案"条目。 */
         fun loadEntries(file: File): LinkedHashMap<String, String> {
             val map = LinkedHashMap<String, String>()
-            runCatching {
-                val ans = JSONObject(file.readText()).optJSONObject("answers") ?: return map
-                for (k in ans.keys()) map[k] = ans.getString(k)
-            }
+            val ans = readAnswers(file) ?: return map
+            for (k in ans.keys()) map[k] = ans.getString(k)
             return map
         }
 
@@ -255,40 +265,19 @@ class AnswerStore(private val context: Context) {
          *  命中不到、慢路径相似度也对不齐(归一化串 vs 带标点串)，会静默查不到。改规则只改这一处。 */
         private fun normalizedKey(question: String): String = TextMatch.normalize(question)
 
-        /** 改写/新增一条答案，保留标题/项目并刷新 updated。 */
-        fun saveEntry(file: File, question: String, letters: String) {
-            runCatching {
-                val o = JSONObject(file.readText())
-                val ans = o.optJSONObject("answers") ?: JSONObject()
-                ans.put(normalizedKey(question), letters)
-                o.put("answers", ans).put("updated", System.currentTimeMillis())
-                file.writeText(o.toString())
-            }.onFailure { Log.e(TAG, "saveEntry failed", it) }
-        }
-
         /** 修正一条：题干和/或答案。改题干=换 key(删旧键、插新键到末尾)，保留/更新答案。
          *  一次文件读写，避免删+存两次 IO。newQuestion 为空则忽略(当作只改答案)。 */
         fun editEntry(file: File, oldQuestion: String, newQuestion: String, letters: String) {
-            runCatching {
-                val o = JSONObject(file.readText())
-                val ans = o.optJSONObject("answers") ?: JSONObject()
-                val newQ = normalizedKey(newQuestion.ifBlank { oldQuestion })
+            val newQ = normalizedKey(newQuestion.ifBlank { oldQuestion })
+            mutateAnswers(file) { ans ->
                 if (newQ != oldQuestion) ans.remove(oldQuestion)   // 题干变了→删旧键
-                ans.put(newQ, letters)                              // 插/更新(放到末尾=最近)
-                o.put("answers", ans).put("updated", System.currentTimeMillis())
-                file.writeText(o.toString())
-            }.onFailure { Log.e(TAG, "editEntry failed", it) }
+                ans.put(newQ, letters)                             // 插/更新(放到末尾=最近)
+            }
         }
 
         /** 删除一条答案。 */
         fun deleteEntry(file: File, question: String) {
-            runCatching {
-                val o = JSONObject(file.readText())
-                val ans = o.optJSONObject("answers") ?: return
-                ans.remove(question)
-                o.put("answers", ans).put("updated", System.currentTimeMillis())
-                file.writeText(o.toString())
-            }.onFailure { Log.e(TAG, "deleteEntry failed", it) }
+            mutateAnswers(file) { it.remove(question) }
         }
     }
 }
