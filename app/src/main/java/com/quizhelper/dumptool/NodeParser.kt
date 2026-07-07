@@ -55,25 +55,20 @@ object NodeParser {
 
     private data class Leaf(val text: String, val box: Rect, val clickable: Boolean)
 
-    private fun walk(node: AccessibilityNodeInfo?, leaves: ArrayList<Leaf>) {
+    /** 单趟 DFS：收集非空文本叶子；传了 [rects] 则同时收集**每个**节点的 bounds(含无文字 View)。
+     *  视频进度条没文字，读绿条填充比要靠 rects；一趟走完避免对整棵树遍历两遍、也少一半 getBoundsInScreen。 */
+    private fun walk(node: AccessibilityNodeInfo?, leaves: ArrayList<Leaf>, rects: ArrayList<Rect>? = null) {
         node ?: return
         val box = Rect(); node.getBoundsInScreen(box)
+        rects?.add(box)
         val t = node.text?.toString()?.trim() ?: ""
         if (t.isNotBlank()) leaves.add(Leaf(t, box, node.isClickable))
-        for (i in 0 until node.childCount) walk(node.getChild(i), leaves)
+        for (i in 0 until node.childCount) walk(node.getChild(i), leaves, rects)
     }
 
     /** 收集整棵树的非空文本叶子（题目/视频/考试/调试解析共用入口；root 为 null 返回空）。 */
     private fun leavesOf(root: AccessibilityNodeInfo?): List<Leaf> {
         val leaves = ArrayList<Leaf>(); walk(root, leaves); return leaves
-    }
-
-    /** 收集整棵树里**所有**节点的 bounds（含无文字的 View）——视频进度条没文字，leavesOf 收不到，
-     *  读绿条填充比要用这个。 */
-    private fun allRects(node: AccessibilityNodeInfo?, out: ArrayList<Rect>) {
-        node ?: return
-        val r = Rect(); node.getBoundsInScreen(r); out.add(r)
-        for (i in 0 until node.childCount) allRects(node.getChild(i), out)
     }
 
     /** 节点 bounds 中心 → 可点坐标。 */
@@ -247,25 +242,33 @@ object NodeParser {
         return if (c.isEmpty()) a * 60 + b else a * 3600 + b * 60 + c.toInt()
     }
 
+    // —— barCoverage 的屏幕布局假设(依目标 App 当前 UI，App 改版需重调；1080 宽实测值) ——
+    private const val BAR_LEFT_MIN = 70          // 进度条左缘 x 落在 [70,110] 这一簇
+    private const val BAR_LEFT_MAX = 110
+    private const val BAR_TOP_PAD = 40            // 进度条在行文字下方 ≥40px
+    private const val BAR_MIN_TRACK_W = 300       // 够宽才算轨道，滤掉零碎矩形
+    private const val BAR_TOP_TOL = 8             // 认定"同顶"的像素容差
+
     /** 读某行绿色进度条的真实覆盖率(0..1)——进度条无文字，从 allRects 按几何找。这才是"看完没"的真信号。
      *  结构：左≈88 处一簇同左同顶的矩形——灰轨道(最宽)+绿填充(子)。**空条的填充是零宽矩形** `[88..][88..]`，
      *  绝不能按"宽度"过滤掉它，否则只剩满宽轨道→min=max→误判 100%（真机实测未看的任务被当成已看完）。
      *  做法：先取最宽的当轨道(=满值)，再在与轨道同左同顶的矩形里取最小右当填充右；覆盖=(填充右−左)/满值。 */
     private fun barCoverage(rects: List<Rect>, rowTop: Int, bandBottom: Int): Double {
-        val cand = rects.filter { it.left in 70..110 && it.top > rowTop + 40 && it.top < bandBottom }
+        val cand = rects.filter { it.left in BAR_LEFT_MIN..BAR_LEFT_MAX && it.top > rowTop + BAR_TOP_PAD && it.top < bandBottom }
         val track = cand.maxByOrNull { it.right - it.left } ?: return -1.0
         val full = track.right - track.left
-        if (full < 300) return -1.0                 // 没找到够宽的进度条轨道
-        val fillRight = cand.filter { it.left == track.left && kotlin.math.abs(it.top - track.top) <= 8 }
+        if (full < BAR_MIN_TRACK_W) return -1.0     // 没找到够宽的进度条轨道
+        val fillRight = cand.filter { it.left == track.left && kotlin.math.abs(it.top - track.top) <= BAR_TOP_TOL }
             .minOf { it.right }                      // 空条=左本身(零宽填充)→0%；满条=轨道右→100%
         return ((fillRight - track.left).toDouble() / full).coerceIn(0.0, 1.0)
     }
 
     fun toVideoModel(root: AccessibilityNodeInfo?): VideoModel {
         root ?: return VideoModel(VideoKind.OTHER, -1.0, null, -1, -1, null, false, emptyList(), null)
-        val leaves = leavesOf(root)
+        val leaves = ArrayList<Leaf>()
+        val rects = ArrayList<Rect>()
+        walk(root, leaves, rects)   // 一趟同时拿文本叶 + 全部节点 bounds(读绿条用)
         val rb = Rect(); root.getBoundsInScreen(rb)
-        val rects = ArrayList<Rect>(); allRects(root, rects)
 
         // 整体完成进度%（完成条件按此判定，≥95=完成）：详情页在"观看进度 X%"这一叶；播放器页是**独立裸叶**
         // "83.0776 %"。都要能读到。**必须**排除静态文案"完成条件：视频进度达到95%"——取全页最大% 会把 95
