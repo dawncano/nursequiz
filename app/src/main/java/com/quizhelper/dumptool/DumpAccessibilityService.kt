@@ -401,13 +401,13 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
      */
     private fun captureIfUnhandledQuestion() {
         val root = targetRoot() ?: return
-        val dump = NodeParser.debugDump(root)
         // 放宽：凡是 act() 没识别出的画面都 dump(不再只抓"像题目"的)，这样组完成边界的
         // 提交确认框/成绩结果页/返回首页等过渡屏也能取证——它们正是组循环要精确适配的部分。
-        // 按整页节点文本内容去重(同一屏只存一次)，不同屏各存一份，避免刷屏又不漏屏。
-        val hash = dump.hashCode()
-        if (hash == lastUnhandledHash) return
-        lastUnhandledHash = hash
+        // 先用廉价叶签名去重(不拼整棵树)——卡在同一未识别屏时每帧都 debugDump 会反复 string-build 整树。
+        val sig = NodeParser.leafSignature(root)
+        if (sig == lastUnhandledHash) return
+        lastUnhandledHash = sig
+        val dump = NodeParser.debugDump(root)   // 确认是新屏才拼完整 dump 落盘
         // 写到独立的 unhandled/ 目录——不进 dumps/，避免被 clearDumps() 在停止时清掉，方便事后取证。
         runCatching {
             File(AnswerStore.unhandledDir(this), "unhandled_" + fileTime() + ".txt").writeText(

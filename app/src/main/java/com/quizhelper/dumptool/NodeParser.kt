@@ -71,6 +71,14 @@ object NodeParser {
         val leaves = ArrayList<Leaf>(); walk(root, leaves); return leaves
     }
 
+    /** 廉价的"当前屏"签名：只按叶文本折叠 hash，不拼整棵树字符串。供未识别画面去重用——
+     *  卡在同一屏时避免每帧都 debugDump 整树。同文本不同布局会被视为同屏(对调试取证足够)。 */
+    fun leafSignature(root: AccessibilityNodeInfo?): Int {
+        var h = 1
+        for (l in leavesOf(root)) h = h * 31 + l.text.hashCode()
+        return h
+    }
+
     /** 节点 bounds 中心 → 可点坐标。 */
     private fun center(r: Rect): XY = XY(r.centerX(), r.centerY())
 
