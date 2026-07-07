@@ -96,7 +96,7 @@ class AnswerStore(private val context: Context) {
     /** 合并所有库文件为一张 归一化key→答案 索引（写库时 key 已归一化，可直接比）。 */
     private fun buildExamIndex(): Map<String, String> {
         val merged = HashMap<String, String>()
-        File(context.getExternalFilesDir(null), "banks")
+        banksDir(context)
             .listFiles { f -> f.name.endsWith(".json") }
             ?.forEach { f -> merged.putAll(loadEntries(f)) }
         return merged
@@ -160,10 +160,8 @@ class AnswerStore(private val context: Context) {
             .first().key
     }
 
-    private fun newFile(id: String): File {
-        val dir = File(context.getExternalFilesDir(null), "banks").apply { mkdirs() }
-        return File(dir, "bank_" + Integer.toHexString(id.hashCode()) + "_" + id.length + ".json")
-    }
+    private fun newFile(id: String): File =
+        File(banksDir(context), "bank_" + Integer.toHexString(id.hashCode()) + "_" + id.length + ".json")
 
     private fun load() {
         val f = file() ?: return
@@ -196,10 +194,14 @@ class AnswerStore(private val context: Context) {
     companion object {
         private const val TAG = "DumpTool"
 
+        // App 私有外部目录下的固定子目录。名字只此一处，避免"写的和清的"两处字符串对不上。
+        fun banksDir(c: Context): File = File(c.getExternalFilesDir(null), "banks").apply { mkdirs() }
+        fun dumpsDir(c: Context): File = File(c.getExternalFilesDir(null), "dumps").apply { mkdirs() }
+        fun unhandledDir(c: Context): File = File(c.getExternalFilesDir(null), "unhandled").apply { mkdirs() }
+
         /** 列出所有已存题库(供管理界面用)。 */
         fun listBanks(context: Context): List<BankInfo> {
-            val dir = File(context.getExternalFilesDir(null), "banks")
-            val files = dir.listFiles { f -> f.name.endsWith(".json") } ?: return emptyList()
+            val files = banksDir(context).listFiles { f -> f.name.endsWith(".json") } ?: return emptyList()
             return files.mapNotNull { f ->
                 runCatching {
                     val o = JSONObject(f.readText())
@@ -216,11 +218,10 @@ class AnswerStore(private val context: Context) {
 
         /** 临时文件(调试 dump 等)占用字节数。 */
         fun tempBytes(context: Context): Long =
-            File(context.getExternalFilesDir(null), "dumps").listFiles()
-                ?.sumOf { it.length() } ?: 0L
+            dumpsDir(context).listFiles()?.sumOf { it.length() } ?: 0L
 
         fun clearTemp(context: Context) {
-            File(context.getExternalFilesDir(null), "dumps").listFiles()?.forEach { it.delete() }
+            dumpsDir(context).listFiles()?.forEach { it.delete() }
         }
 
         /** 清空本 App 的全部数据：题库、临时文件、所有设置。

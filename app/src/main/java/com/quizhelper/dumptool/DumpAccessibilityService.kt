@@ -417,8 +417,7 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
         lastUnhandledHash = hash
         // 写到独立的 unhandled/ 目录——不进 dumps/，避免被 clearDumps() 在停止时清掉，方便事后取证。
         runCatching {
-            val dir = File(getExternalFilesDir(null), "unhandled").apply { mkdirs() }
-            File(dir, "unhandled_" + fileTime() + ".txt").writeText(
+            File(AnswerStore.unhandledDir(this), "unhandled_" + fileTime() + ".txt").writeText(
                 "==== UNHANDLED " + humanTime() + " pkg=" + root.packageName + " ====\n" + dump)
         }.onFailure { Log.e(TAG, "save unhandled", it) }
         Log.w(TAG, "UNHANDLED 未识别画面 已dump节点树到 files/unhandled/")
@@ -493,8 +492,7 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
 
     private fun saveToFile(prefix: String, text: String) {
         runCatching {
-            val dir = File(getExternalFilesDir(null), "dumps").apply { mkdirs() }
-            File(dir, "${prefix}_" + fileTime() + ".txt").writeText(text)
+            File(AnswerStore.dumpsDir(this), "${prefix}_" + fileTime() + ".txt").writeText(text)
         }.onFailure { Log.e(TAG, "save", it) }
     }
 
