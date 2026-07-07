@@ -18,7 +18,6 @@ import android.os.Looper
 import android.util.Log
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
-import android.widget.Toast
 import androidx.core.content.ContextCompat
 import java.io.File
 import java.text.SimpleDateFormat
@@ -505,5 +504,4 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
 
     private fun humanTime() = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
     private fun fileTime() = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-    private fun toast(msg: String) { mainHandler.post { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() } }
 }

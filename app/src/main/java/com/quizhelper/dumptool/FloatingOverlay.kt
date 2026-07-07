@@ -13,7 +13,6 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.widget.Toast
 import kotlin.math.abs
 
 /**
@@ -92,7 +91,7 @@ class FloatingOverlay(private val ctx: Context, private val host: OverlayHost) {
         renderLevel()
         frame.post { snapToEdge() }
         runCatching { wm.addView(frame, params) }
-            .onFailure { toast("悬浮窗添加失败：${it.message}") }
+            .onFailure { ctx.toast("悬浮窗添加失败：${it.message}") }
     }
 
     /** 悬浮答案模式不要大球：只移除/恢复控制球本身（答案小标签独立、不受影响）。
@@ -373,5 +372,4 @@ class FloatingOverlay(private val ctx: Context, private val host: OverlayHost) {
             setOnClickListener { onClick() }
         }
 
-    private fun toast(msg: String) = handler.post { Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show() }
 }

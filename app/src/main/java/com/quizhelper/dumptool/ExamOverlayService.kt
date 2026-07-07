@@ -10,12 +10,9 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import android.util.Log
 import android.view.WindowManager
-import android.widget.Toast
 import androidx.core.content.ContextCompat
 
 /**
@@ -56,7 +53,6 @@ class ExamOverlayService : Service() {
         fun toggle(ctx: Context) = ctx.sendBroadcast(Intent(ACTION_TOGGLE).setPackage(ctx.packageName))
     }
 
-    private val handler = Handler(Looper.getMainLooper())
     private var overlay: AnswerLabel? = null
     private var armed = false     // 是否已双击开始(开无障碍后)
 
@@ -133,6 +129,4 @@ class ExamOverlayService : Service() {
         toast(if (ok) "已开启无障碍，开始读题显示答案" else "未能自动开无障碍(需adb授权)")
         Log.i(TAG, "ExamOverlay 双击开始 enableA11y=$ok")
     }
-
-    private fun toast(msg: String) = handler.post { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
 }
