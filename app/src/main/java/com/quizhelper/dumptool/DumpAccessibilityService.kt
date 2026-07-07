@@ -3,7 +3,6 @@ package com.quizhelper.dumptool
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.app.Notification
-import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.ClipData
@@ -265,12 +264,7 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
     private fun notifyStop(title: String, msg: String) {
         runCatching {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            val chId = "quiz_auto_stop"
-            if (android.os.Build.VERSION.SDK_INT >= 26) {
-                nm.createNotificationChannel(
-                    NotificationChannel(chId, "自动答题停止提醒", NotificationManager.IMPORTANCE_HIGH)
-                )
-            }
+            val chId = ensureChannel("quiz_auto_stop", "自动答题停止提醒", NotificationManager.IMPORTANCE_HIGH)
             val n = Notification.Builder(this, chId)
                 .setSmallIcon(android.R.drawable.stat_sys_warning)
                 .setContentTitle(title)

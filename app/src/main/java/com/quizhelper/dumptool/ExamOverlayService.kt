@@ -1,7 +1,6 @@
 package com.quizhelper.dumptool
 
 import android.app.Notification
-import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.BroadcastReceiver
@@ -100,13 +99,7 @@ class ExamOverlayService : Service() {
     // ---- 前台服务 ----------------------------------------------------------
 
     private fun startAsForeground() {
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= 26) {
-            nm.createNotificationChannel(
-                NotificationChannel(CH_ID, "考试悬浮答案", NotificationManager.IMPORTANCE_MIN)
-            )
-        }
-        val n = Notification.Builder(this, CH_ID)
+        val n = Notification.Builder(this, ensureChannel(CH_ID, "考试悬浮答案", NotificationManager.IMPORTANCE_MIN))
             .setSmallIcon(android.R.drawable.ic_menu_help)
             .setContentTitle("考试模式")
             .setContentText("悬浮答案运行中")
