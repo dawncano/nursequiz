@@ -38,13 +38,15 @@ class WaitForScheduler(
     /** 新一轮运行开始时清签名(startAuto 用)。 */
     fun reset() { lastStepSig = 0; lastPollSig = 0 }
 
-    /** 一帧屏的轻量签名：类型+题干+标题。够区分页面切换，又不引入新解析成本。 */
-    private fun sigOf(m: ScreenModel): Int = (m.kind.name + "|" + m.questionText + "|" + m.title).hashCode()
-    private fun sigNow(): Int = runCatching { sigOf(NodeParser.toModel(targetRoot())) }.getOrNull() ?: 0
+    // 一帧屏的轻量签名：叶文本折叠 hash(见 NodeParser.leafSignature)。够区分页面切换，且每 90ms 轮询只走一趟
+    // 收叶+hash，不再跑整套 toModel(含 O(N²) 选项行匹配)。代价：签名基准从 类型|题干|标题 换成"叶文本变没变"
+    // ——静态题面照常快速就绪；若某屏有动态文本(计时器等)可能到 waitMaxMs 才兜底走，不影响正确性。
+    private fun sigNow(): Int = NodeParser.leafSignature(targetRoot())
 
-    /** 记录"本步操作的屏签名"，waitFor 据此判断屏变没变。 */
-    fun markStepSig(model: ScreenModel) { lastStepSig = sigOf(model) }
-    /** 同上，但即时重读当前屏算签名(考试模式：先记签名再作答)。 */
+    /** 记录"本步操作的屏签名"，waitFor 据此判断屏变没变。markSig 在 act 之前调，屏尚未变，
+     *  即时重读与轮询同口径(leafSignature)算，两侧一致。model 参数保留以兼容接口，签名不再依赖它。 */
+    fun markStepSig(model: ScreenModel) { lastStepSig = sigNow() }
+    /** 同上(考试模式：先记签名再作答)。现与 [markStepSig] 同实现，都即时重读。 */
     fun markStepSigNow() { lastStepSig = sigNow() }
 
     /** 初始踢一脚：开始/继续时延一小段再读首屏(仅 startAuto/resume 用)。步与步之间的等待走 [scheduleNextStep]。 */
