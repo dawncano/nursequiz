@@ -10,7 +10,7 @@ import android.util.Log
  * 从 [DumpAccessibilityService] 原样抽出，行为不变。这部分尚未真机端到端校准（详见 REQUIREMENTS 5.14.F），
  * 独立成类后将来校准只动本文件，不碰已验证的答题路径。
  */
-class VideoMachine(private val host: AutoHost) {
+class VideoMachine(host: AutoHost) : ModeMachine<VideoModel>(host) {
 
     private var lastVideoPos = -1
     private var currentVideoIdx = -1     // 当前正在看列表里第几个(行下标)
@@ -18,11 +18,16 @@ class VideoMachine(private val host: AutoHost) {
     private val donePct = 95.0            // 整体完成进度≥95%=任务完成(页面明写的完成条件)
     private val videoStepMs = 3000L      // 挂课慢节奏：每 3s 查一次(防暂停/进度推进)
 
-    fun reset() { lastVideoPos = -1; currentVideoIdx = -1 }
+    override fun reset() { lastVideoPos = -1; currentVideoIdx = -1 }
 
-    fun step() {
+    override fun parse(root: android.view.accessibility.AccessibilityNodeInfo?): VideoModel? =
+        NodeParser.toVideoModel(root)
+    override fun markSig(model: VideoModel) {}   // 挂课不走屏签名，靠固定慢节奏轮询
+
+    // 挂课节奏与答题不同：自己控 active 守卫 + 固定 3s 慢轮询(scheduleNext)，不记签名，故整拍重写。
+    override fun step() {
         if (!host.active) return
-        val vm = runCatching { NodeParser.toVideoModel(host.targetRoot()) }
+        val vm = runCatching { parse(host.targetRoot()) }
             .onFailure { Log.e(TAG, "video parse fail", it) }.getOrNull()
         if (vm == null) { scheduleNext(); return }
         act(vm)
@@ -35,7 +40,7 @@ class VideoMachine(private val host: AutoHost) {
     private fun firstPendingIdx(rows: List<VideoRow>): Int =
         rows.indexOfFirst { !rowDone(it) }
 
-    private fun act(vm: VideoModel) {
+    override fun act(vm: VideoModel) {
         when (vm.kind) {
             VideoKind.DETAIL -> {
                 if (vm.watchPct >= donePct) { host.stopAuto("视频完成进度已达 ${vm.watchPct}%"); return }

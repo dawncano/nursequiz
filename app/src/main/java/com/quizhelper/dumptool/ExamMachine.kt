@@ -12,20 +12,17 @@ import android.util.Log
  * 与悬浮答案模式(FloatMachine)的区别：① 答案来自 `store.searchAll`（跨所有库，考试题库常没单独刷过）；
  * ② 答案显示在独立前台服务的浮窗(错峰时无障碍会被关、其 overlay 会消失，故不能用无障碍的浮窗)。
  */
-class ExamMachine(private val host: AutoHost) {
+class ExamMachine(host: AutoHost) : ModeMachine<ExamModel>(host) {
 
     private var lastShown = ""   // 去重：同一屏(同题)已显示过就不重复广播
     private var awaitingQ = ""   // 正在等 AI 异步回答的题干：结果回来时核对，防止显示到已翻过去的旧题上
 
-    fun step() {
-        val em = runCatching { NodeParser.toExamModel(host.targetRoot()) }
-            .onFailure { Log.e(TAG, "exam parse fail", it) }.getOrNull()
-        if (em == null) { host.scheduleNextStep(); return }
-        host.markStepSigNow()   // 复用 waitFor：屏(题)变了才走下一拍，避免同题反复搜索
-        act(em)
-    }
+    override fun parse(root: android.view.accessibility.AccessibilityNodeInfo?): ExamModel? =
+        NodeParser.toExamModel(root)
+    // 考试：即时重读当前屏算签名(先记签名再作答)，复用 waitFor 让屏(题)变了才走下一拍、避免同题反复搜索。
+    override fun markSig(model: ExamModel) = host.markStepSigNow()
 
-    private fun act(em: ExamModel) {
+    override fun act(em: ExamModel) {
         if (em.options.isNotEmpty() && em.questionText.isNotBlank()) {
             val q = em.questionText
             // 跨所有题库搜答案 → AI 兜底 → 都没有则 unknown。全程不点、不建库。
@@ -51,7 +48,7 @@ class ExamMachine(private val host: AutoHost) {
         host.scheduleNextStep()   // 用户翻到下一题(屏变了)就尽快更新浮窗
     }
 
-    fun reset() { lastShown = ""; awaitingQ = "" }
+    override fun reset() { lastShown = ""; awaitingQ = "" }
 
     companion object { private const val TAG = "DumpTool" }
 }

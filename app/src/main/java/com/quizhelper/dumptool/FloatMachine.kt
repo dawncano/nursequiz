@@ -7,21 +7,9 @@ import android.util.Log
  * 答案链路：查库 → AI 兜底 → 都没有则显示 unknown。反馈页一律读正确答案建库(顺便攒库)。
  * 从 [DumpAccessibilityService] 原样抽出，行为不变；仅把 store/overlay/排步走 [AutoHost]。
  */
-class FloatMachine(private val host: AutoHost) {
+class FloatMachine(host: AutoHost) : ScreenModeMachine(host) {
 
-    private var lastQuestionText = ""   // QUESTION页题干，用于FEEDBACK存答案
-
-    fun reset() { lastQuestionText = "" }
-
-    /** 一拍：读屏→记签名(waitFor)→显示答案。屏读不到则等下一拍。 */
-    fun step() {
-        val m = runCatching { NodeParser.toModel(host.targetRoot()) }.getOrNull()
-        if (m == null) { host.scheduleNextStep(); return }
-        host.markStepSig(m)   // 记下本帧屏签名，waitFor 据此判断"屏变没变"
-        act(m)
-    }
-
-    private fun act(m: ScreenModel) {
+    override fun act(m: ScreenModel) {
         when (m.kind) {
             ScreenKind.TASK_DETAIL -> {
                 if (m.title.isNotEmpty()) host.store.setBank(m.title, m.project)  // 载入对应题库供查询
@@ -36,8 +24,7 @@ class FloatMachine(private val host: AutoHost) {
                 Log.i(TAG, "FLOAT QUESTION q='${m.questionText}' show=${known ?: "unknown"}")
             }
             ScreenKind.FEEDBACK -> {
-                val storeKey = lastQuestionText.takeIf { it.isNotEmpty() } ?: m.questionText
-                lastQuestionText = ""
+                val storeKey = feedbackStoreKey(m)
                 val ans = m.correctIdx.mapNotNull { m.optionTexts.getOrNull(it) }.joinToString("|")
                 if (ans.isNotEmpty() && storeKey.isNotEmpty()) host.store.put(storeKey, ans)
                 // 同样只显示正确答案原文；读不到正确答案显示 unknown。

@@ -9,10 +9,9 @@ import android.util.Log
  * 2026-07-01 从 [DumpAccessibilityService] 抽出，与 Float/Video/Exam Machine 对称，逻辑等价照搬未改。
  * 战术状态（题干/失败计数/过渡去重/提交冷却）由本机私有持有；组进度是跨切面状态，经 [AutoHost] 读写。
  */
-class QuizMachine(private val host: AutoHost) {
+class QuizMachine(host: AutoHost) : ScreenModeMachine(host) {
 
     private var groupInProgress = false    // 是否正在做某一组(用于判断回到任务页=一组完成)
-    private var lastQuestionText = ""      // QUESTION页题干，供 FEEDBACK 存答案(避免 FEEDBACK 多出解析文字)
     private var lastStuckQ = ""            // 连续卡在同一题的检测
     private var sameQCount = 0
 
@@ -31,10 +30,10 @@ class QuizMachine(private val host: AutoHost) {
     // 提交后冷却：点完提交确认后反馈页会闪回、弹窗被连读，冷却期内不操作，避免重复提交冲过头。
     private var suppressUntil = 0L
 
-    /** 开始/继续新一轮运行时清空战术状态（组计数由 Service 重置）。 */
-    fun reset() {
+    /** 开始/继续新一轮运行时清空战术状态（组计数由 Service 重置；lastQuestionText 由基类清）。 */
+    override fun reset() {
+        super.reset()
         groupInProgress = false
-        lastQuestionText = ""
         lastStuckQ = ""; sameQCount = 0
         failCount.clear()
         lastTapKey = null; lastTapIntended = emptyList()
@@ -43,16 +42,7 @@ class QuizMachine(private val host: AutoHost) {
         suppressUntil = 0L
     }
 
-    /** 一拍：读题→记签名(waitFor)→按页面类型动作。读不到则等下一屏。 */
-    fun step() {
-        val model = runCatching { NodeParser.toModel(host.targetRoot()) }
-            .onFailure { Log.e(TAG, "node parse fail", it) }.getOrNull()
-        if (model == null) { host.scheduleNextStep(); return }
-        host.markStepSig(model)
-        act(model)
-    }
-
-    private fun act(m: ScreenModel) {
+    override fun act(m: ScreenModel) {
         // 提交后冷却期：一律不操作，让 App 从"提交确认"安心过渡到任务详情页(防反馈页闪回被重复点提交)。
         if (System.currentTimeMillis() < suppressUntil) { host.scheduleNextStep(); return }
         if (m.kind != ScreenKind.UNKNOWN) unknownStreak = 0
@@ -139,10 +129,8 @@ class QuizMachine(private val host: AutoHost) {
             }
             ScreenKind.FEEDBACK -> {
                 val letters = AnswerCodec.idxToLetters(m.correctIdx)
-                // 用 QUESTION 页保存的题干存答案——FEEDBACK 页题干末尾会多出解析说明文字，
-                // 长度不同导致模糊匹配失败，下次 get() 找不到答案。
-                val storeKey = lastQuestionText.takeIf { it.isNotEmpty() } ?: m.questionText
-                lastQuestionText = ""
+                // 存库 key 取 QUESTION 帧题干(反馈页题干带解析后缀会破坏匹配)——由基类 feedbackStoreKey 统一。
+                val storeKey = feedbackStoreKey(m)
                 val key = lastTapKey
                 val intended = lastTapIntended
                 lastTapKey = null
