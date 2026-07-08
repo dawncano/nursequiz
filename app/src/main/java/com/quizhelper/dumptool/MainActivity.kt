@@ -67,9 +67,6 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.wipeAllButton).setOnClickListener { confirmWipeAll() }
         buildSettings()
         requestNotifyPermissionIfNeeded()
-        // 自动开启无障碍：每次启动若服务没开、且已 adb 授予 WRITE_SECURE_SETTINGS，就静默开起来。
-        // 没授权时 enable() 安全失败、无副作用，用户仍可用上面的按钮（会退回系统设置）。
-        if (!DumpAccessibilityService.isRunning) A11yEnabler.enable(this)
     }
 
     private fun toast(msg: String) =
@@ -274,6 +271,12 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        // 每次回到前台都尝试自动开启：覆盖"ROM 在后台把服务杀掉"的场景（onCreate 只触发一次不够）。
+        // 没有 WRITE_SECURE_SETTINGS 时 enable() 安全失败，不影响手动引导流程。
+        if (!DumpAccessibilityService.isRunning) {
+            A11yEnabler.enable(this)
+            statusText.postDelayed({ refreshStatus() }, 700)
+        }
         refreshStatus()
         refreshBanks()
         // 悬浮球若被拖到✕关闭过，打开App时让服务重新唤出（服务没开则无副作用）。
