@@ -2,8 +2,23 @@ package com.quizhelper.dumptool
 
 import android.content.Context
 
-/** 自动循环的作答模式。三个开关在设置页互斥，[Prefs.mode] 按固定优先级解析成单一模式。 */
-enum class AnswerMode { QUIZ, FLOAT, VIDEO, EXAM }
+/**
+ * 自动循环的作答模式。三个开关在设置页互斥，[Prefs.mode] 按固定优先级解析成单一模式。
+ * 各模式的"呈现策略"(显不显控制球/答案渲染到哪/停止后是否留占位)由下面的属性单点定义，
+ * 免得 Service 在 showAnswer/applyOverlayMode/onKeyEvent/stopAuto 到处重问 examMode/floatMode。
+ */
+enum class AnswerMode {
+    QUIZ, FLOAT, VIDEO, EXAM;
+
+    /** 是否显示无障碍控制悬浮球——悬浮/考试模式不显大球(改用小标签/独立前台浮窗)。 */
+    val showsControlBall get() = this == QUIZ || this == VIDEO
+    /** 答案是否渲染到独立前台服务浮窗——考试错峰时无障碍会被关，不能用无障碍 overlay。 */
+    val usesExamOverlay get() = this == EXAM
+    /** 是否用无障碍悬浮小标签显示答案(悬浮模式)。 */
+    val usesAnswerLabel get() = this == FLOAT
+    /** 停止后是否保留占位「。。。」——悬浮模式模式还在，留着让用户知道。 */
+    val keepsPlaceholderOnStop get() = this == FLOAT
+}
 
 /**
  * 用户设置(存 SharedPreferences)。设置项在 MainActivity 改、由无障碍服务运行期读取，

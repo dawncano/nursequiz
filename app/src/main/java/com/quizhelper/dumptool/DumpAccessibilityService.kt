@@ -135,26 +135,25 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
      *  仅这两模式拦截，不影响平时调音量。 */
     override fun onKeyEvent(event: KeyEvent): Boolean {
         if (event.keyCode != KeyEvent.KEYCODE_VOLUME_UP) return super.onKeyEvent(event)
-        if (Prefs.examMode(this)) {
-            if (event.action == KeyEvent.ACTION_DOWN) ExamOverlayService.toggle(this)
-            return true
+        val down = event.action == KeyEvent.ACTION_DOWN
+        return when (Prefs.mode(this)) {
+            // 考试：隐/显考试浮窗(遮答案，广播给 ExamOverlayService，不改音量)。
+            AnswerMode.EXAM -> { if (down) ExamOverlayService.toggle(this); true }
+            // 悬浮答案：开始/结束自动循环。都消费掉音量键，避免误改音量。
+            AnswerMode.FLOAT -> { if (down) { if (auto) stopAuto("音量键停止") else startAuto() }; true }
+            else -> super.onKeyEvent(event)   // 普通/视频不拦，正常调音量
         }
-        if (Prefs.floatMode(this)) {
-            if (event.action == KeyEvent.ACTION_DOWN) { if (auto) stopAuto("音量键停止") else startAuto() }
-            return true   // 消费掉，避免误改音量
-        }
-        return super.onKeyEvent(event)
     }
 
     /** 按作答方式决定显示形态：悬浮答案模式不显大球(用音量+键开始/结束)，改在原球位置显示
      *  小答案标签、立刻显「。。。」占位(让用户知道已切换成功)；其余模式显示控制球、撤掉标签。 */
     private fun applyOverlayMode() {
         if (!::overlay.isInitialized) return
-        // 考试模式：可见 UI 全交给 ExamOverlayService(独立浮窗)，本无障碍服务不显任何浮窗。
-        if (Prefs.examMode(this)) { overlay.setBallVisible(false); overlay.hideAnswer(); return }
-        val float = Prefs.floatMode(this)
-        overlay.setBallVisible(!float)
-        if (float) overlay.showAnswer("。。。") else overlay.hideAnswer()
+        // 呈现策略全由 AnswerMode 定义：考试→球关、答案走独立浮窗(本 overlay 不显)；悬浮→球关、显小标签占位；
+        // 普通/视频→显控制球、撤标签。
+        val mode = Prefs.mode(this)
+        overlay.setBallVisible(mode.showsControlBall)
+        if (mode.usesAnswerLabel) overlay.showAnswer("。。。") else overlay.hideAnswer()
     }
     override fun onUnbind(intent: Intent?): Boolean { cleanup(); return super.onUnbind(intent) }
     override fun onDestroy() { cleanup(); super.onDestroy() }
@@ -245,7 +244,7 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
         paused = false
         overlay.setVisible(true)
         // 悬浮答案模式停止后保留占位「。。。」(模式还在，用户能看到)；其它模式撤掉标签。
-        if (Prefs.floatMode(this)) overlay.showAnswer("。。。") else overlay.hideAnswer()
+        if (Prefs.mode(this).keepsPlaceholderOnStop) overlay.showAnswer("。。。") else overlay.hideAnswer()
         overlay.setKeepScreenOn(false)   // 视频挂课的防息屏一并撤掉
         overlay.refresh()
         overlay.scheduleCollapse()   // 结束后完整态停留 N 秒再自动收回成球
@@ -297,7 +296,7 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
     override fun captureUnhandled() { dumper.captureUnhandled() }
     /** 显示答案：考试模式(错峰、无障碍随时会被关)走独立前台服务的浮窗；其余走无障碍 overlay。 */
     override fun showAnswer(text: String) {
-        if (Prefs.examMode(this)) ExamOverlayService.showAnswer(this, text)
+        if (Prefs.mode(this).usesExamOverlay) ExamOverlayService.showAnswer(this, text)
         else overlay.showAnswer(text)
     }
 
