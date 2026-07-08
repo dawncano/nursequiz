@@ -110,11 +110,10 @@ class QuizMachine(private val host: AutoHost) {
 
                 val distrusted = key != null && failCount.getOrDefault(key, 0) >= failLimit
                 val skipBank = distrusted   // 只有"存档答案不可信"才跳过查库；正常每题都查
-                // 题库命中优先；未命中且未被标记不可信，给 AI 兜底一次(当前空实现返回 null → 自然走盲选)。
-                var known = if (skipBank) null else host.store.get(m.questionText)
-                // AI 兜底(异步)：本拍多半仍返回 null→照常盲选A；反馈页会学到正确答案入库自愈。
-                // AI 结果回来后进缓存，同题下轮重现时(若还没入库)即命中。答题模式 AI 属锦上添花。
-                if (known == null && !skipBank) known = AiHook.resolve(host.appContext, m.questionText, m.optionTexts)
+                // 存档答案可信时走统一取答(当前库命中优先，miss 再 AI 兜底，异步本拍多半返回 null→盲选A、
+                // 反馈页会学到正确答案自愈)；被标记不可信时整条跳过(bank+AI 都不查)、直接盲选。
+                var known = if (skipBank) null
+                            else AnswerResolver.resolve(host, m.questionText, m.optionTexts, AnswerResolver.Scope.CURRENT_BANK)
                 var idxs = if (known != null) {
                     AnswerCodec.textsToIdx(known, m.optionTexts)
                 } else {

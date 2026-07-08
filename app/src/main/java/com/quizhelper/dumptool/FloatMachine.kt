@@ -29,8 +29,7 @@ class FloatMachine(private val host: AutoHost) {
             }
             ScreenKind.QUESTION -> {
                 lastQuestionText = m.questionText
-                var known = host.store.get(m.questionText)
-                if (known == null) known = AiHook.resolve(host.appContext, m.questionText, m.optionTexts)
+                val known = AnswerResolver.resolve(host, m.questionText, m.optionTexts, AnswerResolver.Scope.CURRENT_BANK)
                 // 仿竞品 win2：只显示正确答案【原文】(选项文字)，不是字母、不带前缀。多选用空格分隔。
                 // 是题但查不到答案(库无+AI关)→ 显示 unknown(区别于非答题页的占位「。。。」)。
                 host.showAnswer(AnswerCodec.forDisplay(known))

@@ -31,15 +31,14 @@ class ExamMachine(private val host: AutoHost) {
             // 跨所有题库搜答案 → AI 兜底 → 都没有则 unknown。全程不点、不建库。
             // 考试无对错反馈、新题只能靠 AI；且停在同一题时屏不变不会重读，故传 onLate：
             // AI 异步答案回来后主动刷新浮窗(仅当用户仍停在这道题上)。
-            val known = host.store.searchAll(q)
-                ?: AiHook.resolve(host.appContext, q, em.optionTexts) { late ->
-                    if (late != null && q == awaitingQ) {
-                        val t = AnswerCodec.forDisplay(late)
-                        lastShown = t
-                        host.showAnswer(t)
-                        Log.i(TAG, "EXAM late-AI q='${q.take(16)}' show=$t")
-                    }
+            val known = AnswerResolver.resolve(host, q, em.optionTexts, AnswerResolver.Scope.ALL_BANKS) { late ->
+                if (late != null && q == awaitingQ) {
+                    val t = AnswerCodec.forDisplay(late)
+                    lastShown = t
+                    host.showAnswer(t)
+                    Log.i(TAG, "EXAM late-AI q='${q.take(16)}' show=$t")
                 }
+            }
             awaitingQ = q
             val show = AnswerCodec.forDisplay(known)   // 多选竖线→空格，空则 unknown
             if (show != lastShown) {
