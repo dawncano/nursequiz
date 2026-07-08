@@ -5,8 +5,6 @@ import android.accessibilityservice.GestureDescription
 import android.app.Notification
 import android.app.NotificationManager
 import android.content.BroadcastReceiver
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -18,10 +16,6 @@ import android.util.Log
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.content.ContextCompat
-import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
  * 自动答题/挂课服务（无障碍节点树直读 + 坐标点击）——逻辑层。
@@ -58,6 +52,9 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
     private lateinit var videoMachine: VideoMachine
     private lateinit var examMachine: ExamMachine
 
+    // 调试导出/未识别画面取证(NODES/NODEQ/UNKNOWN 自动 dump)——与答题循环无关，已拆到 NodeDumper。
+    private lateinit var dumper: NodeDumper
+
     /** AutoHost：循环是否在跑（停/暂停后状态机不再排下一拍）。 */
     override val active: Boolean get() = auto && !paused
 
@@ -71,7 +68,6 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
     override var targetGroups = Prefs.DEF_TARGET   // 目标组数，startAuto 时从 Prefs 读
     override var groupsDone = 0
     private var answered = 0
-    private var lastUnhandledHash = 0   // 自动捕获去重：同一未适配画面只 dump 一次
 
     private val cmdReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -88,8 +84,8 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
                     if (auto) stopAuto("切换作答方式")
                     applyOverlayMode()
                 }
-                "com.quizhelper.dumptool.NODES" -> nodeDump()
-                "com.quizhelper.dumptool.NODEQ" -> nodeQuestionDump()
+                "com.quizhelper.dumptool.NODES" -> dumper.nodeDump()
+                "com.quizhelper.dumptool.NODEQ" -> dumper.nodeQuestionDump()
             }
         }
     }
@@ -104,6 +100,7 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
         floatMachine = FloatMachine(this)
         videoMachine = VideoMachine(this)
         examMachine = ExamMachine(this)
+        dumper = NodeDumper(this) { targetRoot() }
         applyOverlayMode()   // 悬浮答案模式不显大球(用音量+键控制)；其它模式显示控制球
         val filter = IntentFilter().apply {
             addAction("com.quizhelper.dumptool.START")
@@ -344,7 +341,7 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
     override fun markStepSigNow() { lastStepSig = sigNow() }
     override fun incAnswered() { answered++ }
     override fun unknownLimit(): Int = Prefs.unknownLimit(this)
-    override fun captureUnhandled() { captureIfUnhandledQuestion() }
+    override fun captureUnhandled() { dumper.captureUnhandled() }
     /** 显示答案：考试模式(错峰、无障碍随时会被关)走独立前台服务的浮窗；其余走无障碍 overlay。 */
     override fun showAnswer(text: String) {
         if (Prefs.examMode(this)) ExamOverlayService.showAnswer(this, text)
@@ -393,50 +390,6 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
     // 调试导出（节点树）
     // ---------------------------------------------------------------------
 
-    /**
-     * 自动捕获未适配题型：当前画面被主流程判成 UNKNOWN，但其实"像一道没被识别出来的题"——
-     * 有"确定/提交/下一题"按钮，或 NodeParser 判定是 填空/判断/多选 却没读到选项。
-     * 这种就把节点树 dump 到 dumps/unhandled_*.txt，供照着真实结构精确补适配（不靠猜）。
-     * 同一画面只 dump 一次（按 题型+题干key 去重），避免刷屏。
-     */
-    private fun captureIfUnhandledQuestion() {
-        val root = targetRoot() ?: return
-        // 放宽：凡是 act() 没识别出的画面都 dump(不再只抓"像题目"的)，这样组完成边界的
-        // 提交确认框/成绩结果页/返回首页等过渡屏也能取证——它们正是组循环要精确适配的部分。
-        // 先用廉价叶签名去重(不拼整棵树)——卡在同一未识别屏时每帧都 debugDump 会反复 string-build 整树。
-        val sig = NodeParser.leafSignature(root)
-        if (sig == lastUnhandledHash) return
-        lastUnhandledHash = sig
-        val dump = NodeParser.debugDump(root)   // 确认是新屏才拼完整 dump 落盘
-        // 写到独立的 unhandled/ 目录——不进 dumps/，避免被 clearDumps() 在停止时清掉，方便事后取证。
-        runCatching {
-            File(AnswerStore.unhandledDir(this), "unhandled_" + fileTime() + ".txt").writeText(
-                "==== UNHANDLED " + humanTime() + " pkg=" + root.packageName + " ====\n" + dump)
-        }.onFailure { Log.e(TAG, "save unhandled", it) }
-        Log.w(TAG, "UNHANDLED 未识别画面 已dump节点树到 files/unhandled/")
-    }
-
-    /** 重构探针：解析护理助手当前页题目 + 诊断各窗口 root 可读性（排查反无障碍/刷新时机）。 */
-    private fun nodeQuestionDump() {
-        val sb = StringBuilder("==== NODEQ " + humanTime() + " ====\n")
-        val ria = rootInActiveWindow
-        sb.append("[diag] rootInActiveWindow pkg=").append(ria?.packageName)
-            .append(" childCount=").append(ria?.childCount).append("\n")
-        for (w in windows ?: emptyList()) {
-            val rt = w.root ?: continue
-            val before = rt.childCount
-            val refreshed = runCatching { rt.refresh() }.getOrDefault(false)
-            sb.append("[diag] win type=").append(w.type).append(" pkg=").append(rt.packageName)
-                .append(" childCount=").append(before).append("->").append(rt.childCount)
-                .append(" refresh=").append(refreshed).append("\n")
-        }
-        val root = targetRoot()
-        sb.append(NodeParser.debugDump(root))
-        saveToFile("nodeq", sb.toString()); copyToClipboard(sb.toString())
-        toast("NODEQ 已导出")
-        Log.i(TAG, "NODEQ done root=" + (root?.packageName ?: "null"))
-    }
-
     /** 取目标 App 的窗口根：排除自己的悬浮窗，取面积最大的外部窗口。 */
     override fun targetRoot(): android.view.accessibility.AccessibilityNodeInfo? {
         rootInActiveWindow?.let { if (it.packageName != packageName) return it }
@@ -452,29 +405,6 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
         return best ?: rootInActiveWindow
     }
 
-    private fun nodeDump() {
-        val sb = StringBuilder("==== NODES ").append(humanTime()).append(" ====\n")
-        val wins = windows
-        if (!wins.isNullOrEmpty()) {
-            for ((i, w) in wins.withIndex()) {
-                sb.append("WIN#$i ").append(w.root?.packageName).append("\n")
-                dumpNode(w.root, 1, sb)
-            }
-        }
-        saveToFile("node", sb.toString()); copyToClipboard(sb.toString())
-        toast("节点已导出")
-    }
-
-    private fun dumpNode(node: android.view.accessibility.AccessibilityNodeInfo?, depth: Int, sb: StringBuilder) {
-        node ?: return
-        val r = Rect(); node.getBoundsInScreen(r)
-        sb.append("  ".repeat(depth))
-        node.text?.takeIf { it.isNotEmpty() }?.let { sb.append(" text=\"$it\"") }
-        node.viewIdResourceName?.takeIf { it.isNotEmpty() }?.let { sb.append(" id=$it") }
-        sb.append(" ").append(r.toShortString()).append("\n")
-        for (i in 0 until node.childCount) dumpNode(node.getChild(i), depth + 1, sb)
-    }
-
     // ---------------------------------------------------------------------
     // 工具
     // ---------------------------------------------------------------------
@@ -482,20 +412,4 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
     /** 清空临时文件目录(调试导出的节点树等)。自动答题不写这些，仅调试广播会写。
      *  每组/每轮提交、手动或自动停止、服务被解绑、进程崩溃前都会调用，避免越用越大。 */
     override fun clearDumps() = AnswerStore.clearTemp(this)
-
-    private fun saveToFile(prefix: String, text: String) {
-        runCatching {
-            File(AnswerStore.dumpsDir(this), "${prefix}_" + fileTime() + ".txt").writeText(text)
-        }.onFailure { Log.e(TAG, "save", it) }
-    }
-
-    private fun copyToClipboard(text: String) {
-        runCatching {
-            (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
-                .setPrimaryClip(ClipData.newPlainText("dump", text))
-        }
-    }
-
-    private fun humanTime() = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
-    private fun fileTime() = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
 }
