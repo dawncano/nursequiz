@@ -55,6 +55,9 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
     // 调试导出/未识别画面取证(NODES/NODEQ/UNKNOWN 自动 dump)——与答题循环无关，已拆到 NodeDumper。
     private lateinit var dumper: NodeDumper
 
+    // waitFor 调度(等下一屏就绪再走下一拍 + 拟人延时)——已拆到 WaitForScheduler，本类只管循环分派。
+    private lateinit var waitFor: WaitForScheduler
+
     /** AutoHost：循环是否在跑（停/暂停后状态机不再排下一拍）。 */
     override val active: Boolean get() = auto && !paused
 
@@ -101,6 +104,7 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
         videoMachine = VideoMachine(this)
         examMachine = ExamMachine(this)
         dumper = NodeDumper(this) { targetRoot() }
+        waitFor = WaitForScheduler(this, { active }, { targetRoot() }, { loopStep() })
         applyOverlayMode()   // 悬浮答案模式不显大球(用音量+键控制)；其它模式显示控制球
         val filter = IntentFilter().apply {
             addAction("com.quizhelper.dumptool.START")
@@ -207,7 +211,7 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
         } else {
             toast("继续")
             Log.i(TAG, "RESUME")
-            scheduleStep()
+            waitFor.kick()
         }
     }
 
@@ -218,8 +222,7 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
         targetGroups = Prefs.targetGroups(this)   // 本次运行的目标组数，取设置页的值
         groupsDone = 0
         answered = 0
-        lastStepSig = 0
-        lastPollSig = 0
+        waitFor.reset()
         quizMachine.reset()
         videoMachine.reset()
         floatMachine.reset()
@@ -233,7 +236,7 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
             Prefs.floatMode(this) -> "悬浮答案模式：进题目会显示答案，自己点"
             else -> "开始自动答题，目标 $targetGroups 组"
         })
-        scheduleStep()
+        waitFor.kick()
     }
 
     override fun stopAuto(reason: String) {
@@ -272,57 +275,6 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
         }
     }
 
-    /** 初始踢一脚：开始/继续时延一小段再读首屏(仅 startAuto/resume 用)。
-     *  步与步之间的"等下一屏"已改走 waitFor(scheduleNextStep)。 */
-    private fun scheduleStep() {
-        if (!auto || paused) return
-        mainHandler.postDelayed({ loopStep() }, Prefs.stepIntervalMs(this))
-    }
-
-    // ---- waitFor 地基：动作后不再傻等固定间隔，轮询等"屏变了且稳住一拍"再继续(带超时兜底) ----
-    // 屏切得快就走得快、且更稳(根治"读太早"竞态)；屏静止/卡住则到 waitMaxMs 再读一次兜底。
-    // 注：拟人随机延时是另一层(后续接开关)——waitFor 管"对不对(屏就绪)"，随机延时管"像不像人(节奏)"。
-    private val waitPollMs = 90L
-    private val waitMaxMs = 1600L
-    private var waitStart = 0L
-    // 拟人随机延时区间(叠在 waitFor 之上)：屏就绪后再随机等这么久，模拟人手节奏。竞品每题约 2~2.5s，
-    // 我们一题 2 步(答题/反馈各一步)，每步补 0.8~1.5s → 一题约 2.5~3.5s，拟人且防风控。关掉则不补。
-    private val humanMinMs = 800L
-    private val humanMaxMs = 1500L
-    private var lastStepSig = 0       // 上一步实际操作的那张屏的签名
-    private var lastPollSig = 0       // 上一拍轮询读到的签名(判"稳定")
-
-    /** 一帧屏的轻量签名：类型+题干+标题。够区分页面切换，又不引入新解析成本。 */
-    private fun sigOf(m: ScreenModel): Int = (m.kind.name + "|" + m.questionText + "|" + m.title).hashCode()
-    private fun sigNow(): Int = runCatching { sigOf(NodeParser.toModel(targetRoot())) }.getOrNull() ?: 0
-
-    override fun scheduleNextStep() {
-        if (!auto || paused) return
-        waitStart = System.currentTimeMillis()
-        lastPollSig = lastStepSig
-        pollForReady()
-    }
-    private fun pollForReady() {
-        if (!auto || paused) return
-        mainHandler.postDelayed({
-            if (!auto || paused) return@postDelayed
-            val sig = sigNow()
-            val changed = sig != lastStepSig                 // 和"上一步操作的屏"不同=切走了
-            val stable = sig == lastPollSig                  // 和上一拍相同=不在动画中途
-            lastPollSig = sig
-            val timedOut = System.currentTimeMillis() - waitStart >= waitMaxMs
-            when {
-                changed && stable -> {
-                    // 屏已就绪：拟人开则补一段随机延时(像人手)，关则立刻走(飞速)。
-                    val pad = if (Prefs.humanize(this)) (humanMinMs..humanMaxMs).random() else 0L
-                    mainHandler.postDelayed({ loopStep() }, pad)
-                }
-                timedOut -> loopStep()          // 屏没变(静止/卡住)兜底：不补拟人延时，免拖慢卡死检测
-                else -> pollForReady()
-            }
-        }, waitPollMs)
-    }
-
     private fun loopStep() {
         if (!auto || paused) return
         // 三个特殊模式各有独立状态机；普通答题留在本类(与组计数/循环紧耦合)。
@@ -337,8 +289,9 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
 
     // ---- AutoHost：供各状态机调用的能力（tap/tapSequence/targetRoot/scheduleNextStep/stopAuto 见下文复用） ----
     override fun postDelayed(delayMs: Long, action: () -> Unit) { mainHandler.postDelayed(action, delayMs) }
-    override fun markStepSig(model: ScreenModel) { lastStepSig = sigOf(model) }
-    override fun markStepSigNow() { lastStepSig = sigNow() }
+    override fun scheduleNextStep() = waitFor.scheduleNextStep()
+    override fun markStepSig(model: ScreenModel) = waitFor.markStepSig(model)
+    override fun markStepSigNow() = waitFor.markStepSigNow()
     override fun incAnswered() { answered++ }
     override fun unknownLimit(): Int = Prefs.unknownLimit(this)
     override fun captureUnhandled() { dumper.captureUnhandled() }
