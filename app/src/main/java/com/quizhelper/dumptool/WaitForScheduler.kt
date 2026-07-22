@@ -23,6 +23,7 @@ class WaitForScheduler(
     private val onStep: () -> Unit
 ) {
     private val handler = Handler(Looper.getMainLooper())
+    private val cancellation = SchedulerCancellation()
 
     private val waitPollMs = 90L
     private val waitMaxMs = 1600L
@@ -36,7 +37,17 @@ class WaitForScheduler(
     private var lastPollSig = 0       // 上一拍轮询读到的签名(判"稳定")
 
     /** 新一轮运行开始时清签名(startAuto 用)。 */
-    fun reset() { lastStepSig = 0; lastPollSig = 0 }
+    fun reset() {
+        handler.removeCallbacksAndMessages(null)
+        cancellation.reactivate()
+        lastStepSig = 0
+        lastPollSig = 0
+    }
+
+    fun cancel() {
+        cancellation.cancel()
+        handler.removeCallbacksAndMessages(null)
+    }
 
     // 一帧屏的轻量签名：叶文本折叠 hash(见 NodeParser.leafSignature)。够区分页面切换，且每 90ms 轮询只走一趟
     // 收叶+hash，不再跑整套 toModel(含 O(N²) 选项行匹配)。代价：签名基准从 类型|题干|标题 换成"叶文本变没变"
@@ -51,22 +62,22 @@ class WaitForScheduler(
 
     /** 初始踢一脚：开始/继续时延一小段再读首屏(仅 startAuto/resume 用)。步与步之间的等待走 [scheduleNextStep]。 */
     fun kick() {
-        if (!active()) return
+        if (!active() || !cancellation.isActive()) return
         handler.postDelayed({ onStep() }, Prefs.stepIntervalMs(ctx))
     }
 
     /** 动作后等下一屏就绪再走下一步。 */
     fun scheduleNextStep() {
-        if (!active()) return
+        if (!active() || !cancellation.isActive()) return
         waitStart = System.currentTimeMillis()
         lastPollSig = lastStepSig
         pollForReady()
     }
 
     private fun pollForReady() {
-        if (!active()) return
+        if (!active() || !cancellation.isActive()) return
         handler.postDelayed({
-            if (!active()) return@postDelayed
+            if (!active() || !cancellation.isActive()) return@postDelayed
             val sig = sigNow()
             val changed = sig != lastStepSig                 // 和"上一步操作的屏"不同=切走了
             val stable = sig == lastPollSig                  // 和上一拍相同=不在动画中途

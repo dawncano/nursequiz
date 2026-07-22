@@ -180,7 +180,7 @@ class AnswerStore(private val context: Context) {
                 .put("project", currentProject)
                 .put("updated", System.currentTimeMillis())
                 .put("answers", ansObj)
-            f.writeText(obj.toString())
+            AtomicFileWriter.write(f) { it.writeText(obj.toString()) }
         }.onFailure { Log.e(TAG, "persist failed", it) }
     }
 
@@ -249,7 +249,7 @@ class AnswerStore(private val context: Context) {
                 val ans = o.optJSONObject("answers") ?: JSONObject()
                 block(ans)
                 o.put("answers", ans).put("updated", System.currentTimeMillis())
-                file.writeText(o.toString())
+                AtomicFileWriter.write(file) { it.writeText(o.toString()) }
             }.onFailure { Log.e(TAG, "mutateAnswers failed on ${file.name}", it) }
         }
 
@@ -269,11 +269,17 @@ class AnswerStore(private val context: Context) {
         /** 修正一条：题干和/或答案。改题干=换 key(删旧键、插新键到末尾)，保留/更新答案。
          *  一次文件读写，避免删+存两次 IO。newQuestion 为空则忽略(当作只改答案)。 */
         fun editEntry(file: File, oldQuestion: String, newQuestion: String, letters: String) {
-            val newQ = normalizedKey(newQuestion.ifBlank { oldQuestion })
+            val keys = editKeys(oldQuestion, newQuestion)
             mutateAnswers(file) { ans ->
-                if (newQ != oldQuestion) ans.remove(oldQuestion)   // 题干变了→删旧键
-                ans.put(newQ, letters)                             // 插/更新(放到末尾=最近)
+                if (keys.newKey != keys.oldKey) ans.remove(keys.oldKey)
+                ans.put(keys.newKey, letters)
             }
+        }
+
+        internal fun editKeys(oldQuestion: String, newQuestion: String): EditKeys {
+            val oldKey = normalizedKey(oldQuestion)
+            val newKey = normalizedKey(newQuestion.ifBlank { oldQuestion })
+            return EditKeys(oldKey, newKey)
         }
 
         /** 删除一条答案。 */
@@ -282,6 +288,8 @@ class AnswerStore(private val context: Context) {
         }
     }
 }
+
+internal data class EditKeys(val oldKey: String, val newKey: String)
 
 /** 题库概要信息（管理界面展示用）。 */
 data class BankInfo(

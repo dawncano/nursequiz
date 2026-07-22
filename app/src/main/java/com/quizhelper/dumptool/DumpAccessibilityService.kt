@@ -161,6 +161,8 @@ open class DumpAccessibilityService : AccessibilityService(), OverlayHost, AutoH
     private fun cleanup() {
         isRunning = false
         auto = false
+        waitFor.cancel()
+        AiHook.invalidatePending()
         clearDumps()   // 服务被解绑/系统关闭也算"结束"，不能依赖手动点清理按钮才删临时文件
         runCatching { unregisterReceiver(cmdReceiver) }
         if (::overlay.isInitialized) overlay.remove()

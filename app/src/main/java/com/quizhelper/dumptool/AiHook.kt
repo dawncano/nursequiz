@@ -37,6 +37,9 @@ object AiHook {
     private val cache = ConcurrentHashMap<String, String>()
     /** 正在请求中的题干 key，去重：同题在结果回来前不重复发请求。 */
     private val inFlight = ConcurrentHashMap.newKeySet<String>()
+    private val requestGuard = AsyncAnswerGuard()
+
+    fun invalidatePending() = requestGuard.invalidateAll()
 
     /** 是否启用：开关开 + appKey/uid 都填了才算。任一缺失都当没开(静默降级为纯盲选/建库)。 */
     fun enabled(ctx: Context): Boolean =
@@ -63,6 +66,7 @@ object AiHook {
         if (inFlight.add(key)) {   // 首次遇到此题：后台发一次请求
             val appKey = Prefs.aiAppKey(ctx)
             val uid = Prefs.aiUid(ctx)
+            val generation = requestGuard.begin(key)
             io.execute {
                 val ans = runCatching { query(question, options, appKey, uid) }
                     .onFailure { Log.w(TAG, "AI 请求异常", it) }
@@ -70,7 +74,11 @@ object AiHook {
                 cache[key] = ans          // 空串也存：标记"问过无解"，不再重试同题
                 inFlight.remove(key)
                 Log.i(TAG, "AI 兜底 q='${question.take(16)}' -> '${ans.take(24)}'")
-                if (onLate != null) main.post { onLate(ans.ifEmpty { null }) }
+                if (onLate != null && requestGuard.isCurrent(key, generation)) {
+                    main.post {
+                        if (requestGuard.isCurrent(key, generation)) onLate(ans.ifEmpty { null })
+                    }
+                }
             }
         }
         return null   // 本次先没有：调用方走盲选/显示 unknown，结果回来后走缓存或 onLate
